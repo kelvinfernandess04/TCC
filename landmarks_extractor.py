@@ -4,29 +4,34 @@ import json
 import argparse
 import os
 import sys
+import glob
 
-def extract_landmarks(video_path):
+def extract_landmarks(video_path, output_dir="JSONs"):
     if not os.path.exists(video_path):
         print(f"Error: File '{video_path}' not found.")
         return
 
+    # Ensure output directory exists
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     # Derive output filename from input filename
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-    output_path = f"{base_name}_landmarks.json"
+    output_path = os.path.join(output_dir, f"{base_name}_landmarks.json")
 
     mp_holistic = mp.solutions.holistic
     
     # Use Holistic model
-    # refine_face_landmarks=False for speed if face is not needed for hand signs (usually not needed for hand shape, but facial expression is part of Libras. Leaving false for now to focus on hands).
+    # smooth_landmarks=False for stateless extraction (Absolute Stability)
     holistic = mp_holistic.Holistic(
         static_image_mode=False,
         model_complexity=1,
-        smooth_landmarks=True,
+        smooth_landmarks=False,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
 
-    print(f"Processing {video_path} using Holistic model...")
+    print(f"Processing {video_path} -> {output_path}...")
     vid = cv2.VideoCapture(video_path)
     if not vid.isOpened():
         print(f"Error: Could not open video {video_path}")
@@ -66,20 +71,16 @@ def extract_landmarks(video_path):
 
     with open(output_path, 'w') as f:
         json.dump(data, f, indent=2)
-    print(f"Done! Holistic landmarks saved to {output_path}")
+    print(f"Done! Saved to {output_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extract hand landmarks from a video file.")
-    parser.add_argument("video_path", nargs='?', help="Path to input video file")
+    # Scan MP4s in MP4 directory
+    mp4_files = glob.glob(os.path.join("MP4", "*.mp4"))
     
-    args = parser.parse_args()
-
-    if args.video_path:
-        extract_landmarks(args.video_path)
+    if not mp4_files:
+        print("No MP4 files found in the current directory.")
     else:
-        # Fallback to interactive input if no argument provided
-        video_path = input("Digite o nome do arquivo de vídeo (ex: video.mp4): ").strip()
-        if video_path:
-            extract_landmarks(video_path)
-        else:
-            print("Nenhum arquivo informado.")
+        print(f"Found {len(mp4_files)} videos. Starting extraction...")
+        for video_file in mp4_files:
+            extract_landmarks(video_file, output_dir="JSONs")
+        print("Batch extraction complete.")

@@ -3,24 +3,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import glob
-from datetime import datetime
+from scipy.spatial.distance import cdist
 
-class UniversalSignComparator:
-    def __init__(self, motion_threshold=0.005):
-        self.motion_threshold = motion_threshold
-        # Weights for DTW Features
-        # 0-4: Thumb-Finger Dists (Shape)
-        # 5: Hand Width (Shape)
-        # 6: Wrist Velocity (Motion)
-        # Total 7 features (indices 0-6).
-        # Actually in code below:
-        # Feat 0-4: Topology (5 items)
-        # Feat 5: Velocity (1 item) -> This seems to be the logic in the current file (6 dims total)
-        # Let's verify strict alignment with the "approved core".
-        # Current file (Step 102/113):
-        # feat = np.array([d_ti, d_tm, d_tr, d_tp, d_ip, velocity]) -> 6 dims
-        # weights = np.array([0.14, 0.14, 0.14, 0.14, 0.14, 0.30]) -> 6 dims
-        self.weights = np.array([0.14, 0.14, 0.14, 0.14, 0.14, 0.30])
+# Pure Numpy implementation to avoid pandas dependency
+
+class LibrasValidator:
+    def __init__(self):
+        # Weights (The Jury)
+        # 60% Shape (5 dims), 40% Motion (3 dims)
+        w_s = 0.12
+        w_m = 0.1333
+        self.weights = np.array([w_s, w_s, w_s, w_s, w_s, w_m, w_m, w_m])
 
     def load_data(self, json_path):
         try:
@@ -31,264 +24,302 @@ class UniversalSignComparator:
             return None, None
 
         frames = []
-        sorted_keys = sorted(data.keys(), key=int)
+        sorted_keys = sorted(data.keys(), key=lambda x: int(x))
         for k in sorted_keys:
             frames.append(data[k])
-            
-        return frames, sorted_keys
+        return frames
 
-    def detect_active_segment(self, frames):
+    def get_global_scalars(self, frames):
         """
-        Segments the video to keep only the active signing phase.
-        Based on Wrist Velocity.
+        Calculates Global Median for Shoulder Width and Palm Size.
         """
-        velocities = []
-        # Calculate velocity profile
-        for i in range(1, len(frames)):
-            curr = frames[i].get('right_hand')
-            prev = frames[i-1].get('right_hand')
-            
-            # Check for None or Empty list
-            if not curr or not prev:
-                velocities.append(0.0)
-                continue
+        shoulder_widths = []
+        palm_sizes_l = []
+        palm_sizes_r = []
+        
+        for frame in frames:
+            pose = frame.get('pose')
+            if pose:
+                p11 = np.array([pose[11]['x'], pose[11]['y']])
+                p12 = np.array([pose[12]['x'], pose[12]['y']])
+                sw = np.linalg.norm(p11 - p12)
+                if sw > 1e-6: shoulder_widths.append(sw)
                 
-            # Wrist is index 0
-            c_wrist = np.array([curr[0]['x'], curr[0]['y']])
-            p_wrist = np.array([prev[0]['x'], prev[0]['y']])
-            
-            # Simple 2D velocity (ignoring depth for segmentation robustness)
-            vel = np.linalg.norm(c_wrist - p_wrist)
-            velocities.append(vel)
-            
-        # Pad velocities to match frames length
-        velocities = [0.0] + velocities
+            lh = frame.get('left_hand')
+            if lh:
+                lw = np.array([lh[0]['x'], lh[0]['y']])
+                lm = np.array([lh[9]['x'], lh[9]['y']])
+                ps = np.linalg.norm(lw - lm)
+                if ps > 1e-6: palm_sizes_l.append(ps)
+                
+            rh = frame.get('right_hand')
+            if rh:
+                rw = np.array([rh[0]['x'], rh[0]['y']])
+                rm = np.array([rh[9]['x'], rh[9]['y']])
+                ps = np.linalg.norm(rw - rm)
+                if ps > 1e-6: palm_sizes_r.append(ps)
+                
+        global_sw = np.median(shoulder_widths) if shoulder_widths else 1.0
+        global_pl = np.median(palm_sizes_l) if palm_sizes_l else 1.0
+        global_pr = np.median(palm_sizes_r) if palm_sizes_r else 1.0
         
-        # Smooth velocity (Moving Average)
-        window_size = 5
-        smoothed_vel = np.convolve(velocities, np.ones(window_size)/window_size, mode='same')
-        
-        # Thresholding
-        active_indices = [i for i, v in enumerate(smoothed_vel) if v > self.motion_threshold]
-        
-        if not active_indices:
-            # print("Warning: No active motion detected. Using full video.")
-            return 0, len(frames)-1, smoothed_vel
-            
-        start = max(0, active_indices[0] - 5) # Pad 5 frames
-        end = min(len(frames)-1, active_indices[-1] + 5)
-        
-        return start, end, smoothed_vel
+        return global_sw, global_pl, global_pr
 
-    def calculate_palm_scale(self, hand_landmarks):
-        """
-        Calculates local scale: Distance from Wrist (0) to Middle MCP (9).
-        Used to normalize all other distances.
-        """
-        if not hand_landmarks or len(hand_landmarks) < 21: return 1.0
-        
-        wrist = np.array([hand_landmarks[0]['x'], hand_landmarks[0]['y'], hand_landmarks[0]['z']])
-        middle_mcp = np.array([hand_landmarks[9]['x'], hand_landmarks[9]['y'], hand_landmarks[9]['z']])
-        
-        dist = np.linalg.norm(wrist - middle_mcp)
-        return dist if dist > 1e-6 else 1.0
+    def get_hand_features(self, hand_lms, pose_lms, shoulder_width, palm_size, prev_hand_lms=None):
+        if not hand_lms: return None 
 
-    def extract_features(self, frames):
-        features_seq = []
+        h = np.array([[lm['x'], lm['y']] for lm in hand_lms])
+        wrist = h[0]
+        
+        # 1. SHAPE (Topology)
+        topo_feats = []
+        relevant_tips = [4, 8, 12, 16, 20]
+        for idx in relevant_tips:
+            dist = np.linalg.norm(wrist - h[idx])
+            topo_feats.append(dist / palm_size)
+            
+        # 2. MOTION (Location + Direction)
+        nose = np.array([pose_lms[0]['x'], pose_lms[0]['y']])
+        loc_dist = np.linalg.norm(wrist - nose) / shoulder_width
+        
+        direction = np.array([0.0, 0.0])
+        if prev_hand_lms:
+            prev_wrist = np.array([prev_hand_lms[0]['x'], prev_hand_lms[0]['y']])
+            diff = wrist - prev_wrist
+            magnitude = np.linalg.norm(diff)
+            # Stabilization threshold
+            if magnitude > (0.01 * shoulder_width):
+                direction = diff / magnitude
+            
+        return np.concatenate([topo_feats, [loc_dist], direction])
+
+    def numpy_interpolate(self, arr):
+        """
+        Linear interpolation for 2D numpy array (column-wise).
+        Handles NaNs.
+        """
+        out = arr.copy()
+        for col_idx in range(out.shape[1]):
+            col = out[:, col_idx]
+            nans = np.isnan(col)
+            # Use X indices for valid values
+            x = lambda z: z.nonzero()[0]
+            
+            if np.sum(~nans) > 0 and np.sum(nans) > 0:
+                col[nans] = np.interp(x(nans), x(~nans), col[~nans])
+                out[:, col_idx] = col
+                
+        # Fill edges with nearest (ffill/bfill behavior equivalent)
+        # Verify any remaining NaNs (leading/trailing if interp range is limited?)
+        # np.interp does extrapolate or clamp? Default is constant extrapolation? 
+        # Actually np.interp clamps to edge values by default. So ffill/bfill is automatic.
+        return out
+
+    def numpy_sma(self, arr, window=3):
+        """
+        Simple Moving Average on columns.
+        """
+        if len(arr) < window: return arr
+        
+        kernel = np.ones(window) / window
+        out = arr.copy()
+        
+        for col_idx in range(out.shape[1]):
+            # mode='same' keeps size, check boundary effects
+            out[:, col_idx] = np.convolve(arr[:, col_idx], kernel, mode='same')
+            
+            # Convolve 'same' has edge artifacts (zero padding). 
+            # Ideally we want valid padding or mirror.
+            # For simplicity in this context, acceptable.
+            
+        return out
+
+    def process_sequence(self, frames):
+        g_sw, g_pl, g_pr = self.get_global_scalars(frames)
+        
+        has_left = any(f.get('left_hand') for f in frames)
+        has_right = any(f.get('right_hand') for f in frames)
+        
+        raw_seq = []
         
         for i, frame in enumerate(frames):
+            pose = frame.get('pose')
+            if not pose: 
+                row_dim = (8 if has_left else 0) + (8 if has_right else 0)
+                raw_seq.append(np.full(row_dim, np.nan))
+                continue
+                
+            lh = frame.get('left_hand')
             rh = frame.get('right_hand')
             
-            # Check for validity and length
-            if not rh or len(rh) < 21: 
-                # Handle missing hand? Interpolate or skip. 
-                # For now, replicate previous or zeros.
-                if features_seq: features_seq.append(features_seq[-1])
-                else: features_seq.append(np.zeros(6))
+            prev_frame = frames[i-1] if i>0 else None
+            prev_lh = prev_frame.get('left_hand') if prev_frame else None
+            prev_rh = prev_frame.get('right_hand') if prev_frame else None
+            
+            row = []
+            
+            if has_left:
+                feats = self.get_hand_features(lh, pose, g_sw, g_pl, prev_lh)
+                if feats is not None:
+                    row.append(feats)
+                else:
+                    row.append(np.full(8, np.nan))
+                    
+            if has_right:
+                feats = self.get_hand_features(rh, pose, g_sw, g_pr, prev_rh)
+                if feats is not None:
+                    row.append(feats)
+                else:
+                    row.append(np.full(8, np.nan))
+            
+            if not row:
+                raw_seq.append(np.full((8 if has_left else 0) + (8 if has_right else 0), np.nan))
                 continue
 
-            # Convert to numpy
-            lms = np.array([[p['x'], p['y'], p['z']] for p in rh])
+            raw_seq.append(np.concatenate(row))
             
-            # 1. Palm Scale
-            scale = self.calculate_palm_scale(rh)
+        # To Numpy
+        data_matrix = np.array(raw_seq)
+        
+        # 3. Interpolation
+        if np.isnan(data_matrix).all():
+            return np.array([]), (has_left, has_right)
             
-            # 2. Shape Features (Topology) - Local & Scaled
-            # Tips: Thumb(4), Index(8), Middle(12), Ring(16), Pinky(20)
-            thumb_tip = lms[4]
-            index_tip = lms[8]
-            middle_tip = lms[12]
-            ring_tip = lms[16]
-            pinky_tip = lms[20]
-            
-            # Distances from Thumb Tip to others (The "Claw" signature)
-            d_ti = np.linalg.norm(thumb_tip - index_tip) / scale
-            d_tm = np.linalg.norm(thumb_tip - middle_tip) / scale
-            d_tr = np.linalg.norm(thumb_tip - ring_tip) / scale
-            d_tp = np.linalg.norm(thumb_tip - pinky_tip) / scale
-            
-            # Hand Width (Index to Pinky)
-            d_ip = np.linalg.norm(index_tip - pinky_tip) / scale
-            
-            # 3. Motion Feature (Velocity)
-            # Velocity relative to palm scale (Zoom invariant speed)
-            if i > 0 and frames[i-1].get('right_hand'):
-                prev_rh = frames[i-1]['right_hand']
-                prev_wrist = np.array([prev_rh[0]['x'], prev_rh[0]['y'], prev_rh[0]['z']])
-                curr_wrist = lms[0]
-                velocity = np.linalg.norm(curr_wrist - prev_wrist) / scale
-            else:
-                velocity = 0.0
+        data_matrix = self.numpy_interpolate(data_matrix)
+        # Safety fill for all-nan columns if any
+        data_matrix = np.nan_to_num(data_matrix) 
+        
+        # 4. Smoothing
+        data_matrix = self.numpy_sma(data_matrix, window=3)
+        
+        # 5. Zero-Delta First Frame
+        if len(data_matrix) > 0:
+            if has_left:
+                data_matrix[0, 6:8] = 0.0
+            if has_right:
+                offset = 8 if has_left else 0
+                data_matrix[0, offset+6:offset+8] = 0.0
                 
-            # Feature Vector [6 dims]
-            feat = np.array([d_ti, d_tm, d_tr, d_tp, d_ip, velocity])
-            
-            features_seq.append(feat)
-            
-        return np.array(features_seq)
+        return data_matrix, (has_left, has_right)
 
-    def dtw_distance(self, seq1, seq2):
-        n, m = len(seq1), len(seq2)
-        if n == 0 or m == 0: return float('inf')
+    def subsequence_dtw(self, ref, target, config):
+        N, D_dim = ref.shape
+        M, _ = target.shape
         
-        # Weights for the 6 features
-        weights = self.weights
+        w_vec = []
+        if config[0]: w_vec.append(self.weights)
+        if config[1]: w_vec.append(self.weights)
+        full_weights = np.concatenate(w_vec)
         
-        dtw = np.full((n + 1, m + 1), float('inf'))
-        dtw[0, 0] = 0
+        if len(full_weights) != D_dim: full_weights = np.ones(D_dim) 
+
+        w_sqrt = np.sqrt(full_weights)
+        ref_w = ref * w_sqrt
+        tgt_w = target * w_sqrt
         
-        for i in range(1, n + 1):
-            for j in range(1, m + 1):
-                diff = seq1[i-1] - seq2[j-1]
-                # Weighted Euclidean Distance
-                cost = np.sqrt(np.sum(weights * (diff ** 2)))
-                dtw[i, j] = cost + min(dtw[i-1, j], dtw[i, j-1], dtw[i-1, j-1])
+        dist_mat = cdist(ref_w, tgt_w, metric='euclidean')
+        
+        D = np.full((N + 1, M + 1), np.inf)
+        D[0, :] = 0 
+        
+        for i in range(1, N + 1):
+            for j in range(1, M + 1):
+                cost = dist_mat[i-1, j-1]
+                D[i, j] = cost + min(D[i-1, j], D[i, j-1], D[i-1, j-1])
                 
-        return dtw[n, m] / max(n, m) # Normalize by path length
+        best_end = np.argmin(D[N, :])
+        best_cost = D[N, best_end]
+        norm_score = best_cost / N
+        
+        path = []
+        i, j = N, best_end
+        if j == 0: return norm_score, 0, 0
+        
+        while i > 0:
+            path.append((i-1, j-1))
+            candidates = [
+                (i-1, j-1, D[i-1, j-1]),
+                (i-1, j,   D[i-1, j]),
+                (i,   j-1, D[i, j-1])
+            ]
+            candidates.sort(key=lambda x: x[2])
+            i, j = candidates[0][0], candidates[0][1]
+            if j < 0: break
+            
+        path.reverse()
+        start = path[0][1] if path else 0
+        end = best_end
+        
+        return norm_score, start, end
 
-    def plot_comparison(self, ref_name, target_name, ref_vel, target_vel):
-        """
-        Plots both velocity profiles on the same chart, normalized by time (0% to 100%).
-        Saves the plot to disk.
-        """
-        plt.figure(figsize=(10, 6))
-        
-        # Normalize time axis
-        ref_time = np.linspace(0, 1, len(ref_vel))
-        target_time = np.linspace(0, 1, len(target_vel))
-        
-        plt.plot(ref_time, ref_vel, label=f'Ref: {ref_name}', color='blue', linewidth=2)
-        plt.plot(target_time, target_vel, label=f'Target: {target_name}', color='orange', linestyle='--', linewidth=2)
-        
-        plt.title(f"Comparison: {ref_name} vs {target_name}")
-        plt.xlabel("Normalized Time (0-100%)")
-        plt.ylabel("Velocity (Normalized by Palm)")
+    def plot_validation(self, ref_name, tgt_name, feat_seq, s, e, score, out_dir):
+        if not os.path.exists(out_dir): os.makedirs(out_dir)
+        plt.figure(figsize=(10, 5))
+        plt.plot(feat_seq[:, 0], color='lightgray', label='Start Stream')
+        if e > s:
+            plt.plot(range(s, e), feat_seq[s:e, 0], color='green', linewidth=2, label='Matched')
+        plt.title(f"{ref_name} vs {tgt_name} | Score: {score:.4f}")
         plt.legend()
         plt.grid(True, alpha=0.3)
-        
-        # Save
-        filename = f"comparison_plots/{ref_name}_VS_{target_name}.png"
-        plt.savefig(filename)
-        plt.close() # Free memory
+        plt.savefig(f"{out_dir}/{ref_name}_VS_{tgt_name}.png")
+        plt.close()
 
-    def compare(self, ref_file, test_file):
-        # Load
-        ref_frames, _ = self.load_data(ref_file)
-        test_frames, _ = self.load_data(test_file)
+    def validate(self, ref_path, tgt_path, out_dir):
+        ref_f = self.load_data(ref_path)
+        tgt_f = self.load_data(tgt_path)
         
-        if not ref_frames or not test_frames: return float('inf')
+        if not ref_f or not tgt_f: return 999.0
         
-        # Segment
-        r_start, r_end, r_vel = self.detect_active_segment(ref_frames)
-        t_start, t_end, t_vel = self.detect_active_segment(test_frames)
+        r_feat, r_cfg = self.process_sequence(ref_f)
+        t_feat, t_cfg = self.process_sequence(tgt_f)
         
-        # Slice Active Segments
-        ref_active = ref_frames[r_start:r_end+1]
-        test_active = test_frames[t_start:t_end+1]
+        if len(r_feat) == 0 or len(t_feat) == 0: return 999.0
         
-        if not ref_active or not test_active:
-            return float('inf')
-
-        # Extract features
-        ref_feats = self.extract_features(ref_active)
-        test_feats = self.extract_features(test_active)
+        if r_feat.shape[1] != t_feat.shape[1]:
+            return 888.0 
+            
+        score, s, e = self.subsequence_dtw(r_feat, t_feat, r_cfg)
         
-        # DTW
-        score = self.dtw_distance(ref_feats, test_feats)
+        ref_name = os.path.basename(ref_path).replace('.json', '').replace('_landmarks', '')
+        tgt_name = os.path.basename(tgt_path).replace('.json', '').replace('_landmarks', '')
         
-        # Plot Comparison (using the active segment velocities for visualization)
-        # Using index 5 (Velocity) from processed features to show what DTW saw
-        r_vel_plot = ref_feats[:, 5]
-        t_vel_plot = test_feats[:, 5]
-        
-        self.plot_comparison(
-            os.path.basename(ref_file).split('_landmarks')[0],
-            os.path.basename(test_file).split('_landmarks')[0],
-            r_vel_plot,
-            t_vel_plot
-        )
+        self.plot_validation(ref_name, tgt_name, t_feat, s, e, score, out_dir)
         
         return score
 
-def scan_directory(json_dir):
-    json_files = glob.glob(os.path.join(json_dir, "*.json"))
-    references = []
-    targets = []
-    
-    for f in json_files:
-        filename = os.path.basename(f)
-        if "_base_" in filename:
-            references.append(f)
-        # All files are targets
-        targets.append(f)
-        
-    return references, targets
-
 if __name__ == "__main__":
-    comparator = UniversalSignComparator(motion_threshold=0.005)
+    validator = LibrasValidator()
+    files = glob.glob(os.path.join("JSONs", "*.json"))
+    refs = [f for f in files if "_base_" in f]
+    targets = files 
     
-    # 1. Setup Directories
-    json_dir = "JSONs"
-    plot_dir = "comparison_plots"
+    # Pre-clean output dir? No, overwrite is fine.
     
-    if not os.path.exists(plot_dir):
-        os.makedirs(plot_dir)
-        
-    # 2. Scan Files
-    refs, targets = scan_directory(json_dir)
-    
-    print(f"Found {len(refs)} References and {len(targets)} Targets.")
-    print("-" * 50)
-    
-    # 3. Batch Compare
     full_report = {}
     
+    print("=== LIBRAS VALIDATOR: ABSOLUTE STABILITY (NP) ===")
+    
     for ref in refs:
-        ref_name = os.path.basename(ref).split('_landmarks')[0]
+        ref_name = os.path.basename(ref).replace('.json', '').replace('_landmarks', '')
         full_report[ref_name] = []
         print(f"Processing Reference: {ref_name}...")
         
+        self_score = validator.validate(ref, ref, "comparison_plots")
+        print(f"[{self_score:.4f}] {ref_name} vs {ref_name}")
+        
         for target in targets:
-            target_name = os.path.basename(target).split('_landmarks')[0]
-            
-            # Optional: Skip self-compare vs strict requirements.
-            # User said: "compare against all targets"
-            # It enables checking baseline = 0.0
-            
-            score = comparator.compare(ref, target)
-            full_report[ref_name].append((target_name, score))
+            target_name = os.path.basename(target).replace('.json', '').replace('_landmarks', '')
+            try:
+                score = validator.validate(ref, target, "comparison_plots")
+                status = "APROVADO" if score < 0.6 else "REPROVADO"
+                full_report[ref_name].append((target_name, score, status))
+            except Exception as e:
+                full_report[ref_name].append((target_name, 999.0, f"Error"))
 
-    # 4. Final Report
     print("\n" + "="*50)
     print("FINAL BATCH REPORT")
     print("="*50)
-    
     for ref_name, results in full_report.items():
         print(f"\n=== RESULTADOS PARA: {ref_name} ===")
-        # Sort by score (Lower is better)
-        sorted_results = sorted(results, key=lambda x: x[1])
-        
-        for target_name, score in sorted_results:
-            # Heuristic for Print
-            status = "APROVADO" if score < 0.3 else "REPROVADO"
+        for target_name, score, status in sorted(results, key=lambda x: x[1]):
             print(f"[{score:.4f}] {target_name} ({status})")
