@@ -10,9 +10,9 @@ from scipy.spatial.distance import cdist
 class LibrasValidator:
     def __init__(self):
         # Weights (The Jury)
-        # 60% Shape (5 dims), 40% Motion (3 dims)
-        w_s = 0.12
-        w_m = 0.1333
+        # 70% Shape (5 dims), 30% Motion (3 dims)
+        w_s = 0.14
+        w_m = 0.10
         self.weights = np.array([w_s, w_s, w_s, w_s, w_s, w_m, w_m, w_m])
 
     def load_data(self, json_path):
