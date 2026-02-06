@@ -2,6 +2,8 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import glob
+from datetime import datetime
 
 class UniversalSignComparator:
     def __init__(self, motion_threshold=0.005):
@@ -10,10 +12,15 @@ class UniversalSignComparator:
         # 0-4: Thumb-Finger Dists (Shape)
         # 5: Hand Width (Shape)
         # 6: Wrist Velocity (Motion)
-        # Total 7 features.
-        # Shape (6 features) = 70% weight -> 0.116 each
-        # Motion (1 feature) = 30% weight -> 0.30
-        self.weights = np.array([0.12, 0.12, 0.12, 0.12, 0.12, 0.1, 0.3])
+        # Total 7 features (indices 0-6).
+        # Actually in code below:
+        # Feat 0-4: Topology (5 items)
+        # Feat 5: Velocity (1 item) -> This seems to be the logic in the current file (6 dims total)
+        # Let's verify strict alignment with the "approved core".
+        # Current file (Step 102/113):
+        # feat = np.array([d_ti, d_tm, d_tr, d_tp, d_ip, velocity]) -> 6 dims
+        # weights = np.array([0.14, 0.14, 0.14, 0.14, 0.14, 0.30]) -> 6 dims
+        self.weights = np.array([0.14, 0.14, 0.14, 0.14, 0.14, 0.30])
 
     def load_data(self, json_path):
         try:
@@ -65,7 +72,7 @@ class UniversalSignComparator:
         active_indices = [i for i, v in enumerate(smoothed_vel) if v > self.motion_threshold]
         
         if not active_indices:
-            print("Warning: No active motion detected. Using full video.")
+            # print("Warning: No active motion detected. Using full video.")
             return 0, len(frames)-1, smoothed_vel
             
         start = max(0, active_indices[0] - 5) # Pad 5 frames
@@ -97,7 +104,7 @@ class UniversalSignComparator:
                 # Handle missing hand? Interpolate or skip. 
                 # For now, replicate previous or zeros.
                 if features_seq: features_seq.append(features_seq[-1])
-                else: features_seq.append(np.zeros(6)) # Adjusted to size 6
+                else: features_seq.append(np.zeros(6))
                 continue
 
             # Convert to numpy
@@ -133,16 +140,8 @@ class UniversalSignComparator:
             else:
                 velocity = 0.0
                 
-            # Feature Vector [7 dims]
+            # Feature Vector [6 dims]
             feat = np.array([d_ti, d_tm, d_tr, d_tp, d_ip, velocity])
-            
-            # Padding to match weights length if needed, or adjust weights
-            # Wait, I defined 7 weights but calculated 6 features?
-            # 0: TI, 1: TM, 2: TR, 3: TP, 4: IP. Total 5 Topo.
-            # 5: Velocity. Total 6.
-            # Let's adjust weights to size 6.
-            # Shape (5) = 70% -> 0.14 each.
-            # Motion (1) = 30%.
             
             features_seq.append(feat)
             
@@ -152,8 +151,8 @@ class UniversalSignComparator:
         n, m = len(seq1), len(seq2)
         if n == 0 or m == 0: return float('inf')
         
-        # Adjust weights
-        weights = np.array([0.14, 0.14, 0.14, 0.14, 0.14, 0.30])
+        # Weights for the 6 features
+        weights = self.weights
         
         dtw = np.full((n + 1, m + 1), float('inf'))
         dtw[0, 0] = 0
@@ -167,40 +166,48 @@ class UniversalSignComparator:
                 
         return dtw[n, m] / max(n, m) # Normalize by path length
 
-    def plot_segmentation(self, name, vel, start, end):
-        plt.figure(figsize=(10, 4))
-        plt.plot(vel, label='Velocity')
-        plt.axvspan(start, end, color='green', alpha=0.3, label='Active Segment')
-        plt.axhline(self.motion_threshold, color='r', linestyle='--', label='Threshold')
-        plt.title(f"Temporal Segmentation: {name}")
+    def plot_comparison(self, ref_name, target_name, ref_vel, target_vel):
+        """
+        Plots both velocity profiles on the same chart, normalized by time (0% to 100%).
+        Saves the plot to disk.
+        """
+        plt.figure(figsize=(10, 6))
+        
+        # Normalize time axis
+        ref_time = np.linspace(0, 1, len(ref_vel))
+        target_time = np.linspace(0, 1, len(target_vel))
+        
+        plt.plot(ref_time, ref_vel, label=f'Ref: {ref_name}', color='blue', linewidth=2)
+        plt.plot(target_time, target_vel, label=f'Target: {target_name}', color='orange', linestyle='--', linewidth=2)
+        
+        plt.title(f"Comparison: {ref_name} vs {target_name}")
+        plt.xlabel("Normalized Time (0-100%)")
+        plt.ylabel("Velocity (Normalized by Palm)")
         plt.legend()
-        plt.savefig(f"segmentation_{name}.png")
-        plt.close()
+        plt.grid(True, alpha=0.3)
+        
+        # Save
+        filename = f"comparison_plots/{ref_name}_VS_{target_name}.png"
+        plt.savefig(filename)
+        plt.close() # Free memory
 
     def compare(self, ref_file, test_file):
-        print(f"Comparing {ref_file} vs {test_file}...")
-        
         # Load
         ref_frames, _ = self.load_data(ref_file)
         test_frames, _ = self.load_data(test_file)
         
-        if not ref_frames or not test_frames: return
+        if not ref_frames or not test_frames: return float('inf')
         
         # Segment
         r_start, r_end, r_vel = self.detect_active_segment(ref_frames)
         t_start, t_end, t_vel = self.detect_active_segment(test_frames)
         
-        # Plot Segmentation
-        self.plot_segmentation(os.path.basename(ref_file).split('.')[0], r_vel, r_start, r_end)
-        self.plot_segmentation(os.path.basename(test_file).split('.')[0], t_vel, t_start, t_end)
-        
-        # Slice
+        # Slice Active Segments
         ref_active = ref_frames[r_start:r_end+1]
         test_active = test_frames[t_start:t_end+1]
         
         if not ref_active or not test_active:
-            print("Error: Empty active segment.")
-            return
+            return float('inf')
 
         # Extract features
         ref_feats = self.extract_features(ref_active)
@@ -209,32 +216,79 @@ class UniversalSignComparator:
         # DTW
         score = self.dtw_distance(ref_feats, test_feats)
         
-        print(f"  > Active Segment Ref : Frames {r_start} to {r_end} ({len(ref_active)} frames)")
-        print(f"  > Active Segment Test: Frames {t_start} to {t_end} ({len(test_active)} frames)")
-        print(f"  > Similarity Score   : {score:.4f}")
+        # Plot Comparison (using the active segment velocities for visualization)
+        # Using index 5 (Velocity) from processed features to show what DTW saw
+        r_vel_plot = ref_feats[:, 5]
+        t_vel_plot = test_feats[:, 5]
         
-        # Interpretation
-        # 0.0 is identical.
-        # "Abacate" vs "Abacaxi" (Claw vs C) -> Thumb dists will differ significantly.
+        self.plot_comparison(
+            os.path.basename(ref_file).split('_landmarks')[0],
+            os.path.basename(test_file).split('_landmarks')[0],
+            r_vel_plot,
+            t_vel_plot
+        )
+        
         return score
+
+def scan_directory(json_dir):
+    json_files = glob.glob(os.path.join(json_dir, "*.json"))
+    references = []
+    targets = []
+    
+    for f in json_files:
+        filename = os.path.basename(f)
+        if "_base_" in filename:
+            references.append(f)
+        # All files are targets
+        targets.append(f)
+        
+    return references, targets
 
 if __name__ == "__main__":
     comparator = UniversalSignComparator(motion_threshold=0.005)
     
-    ref = "JSONs/abacate_base_boa_landmarks.json"
-    targets = [
-        "JSONs/abacate_certo1_landmarks.json",
-        "JSONs/abacate_certo2_landmarks.json",
-        "JSONs/abacaxi_base_landmarks.json"
-    ]
+    # 1. Setup Directories
+    json_dir = "JSONs"
+    plot_dir = "comparison_plots"
     
-    print("=== UNIVERSAL COMPARATOR RUN ===")
-    results = {}
-    for t in targets:
-        score = comparator.compare(ref, t)
-        results[t] = score
-        print("-" * 30)
+    if not os.path.exists(plot_dir):
+        os.makedirs(plot_dir)
+        
+    # 2. Scan Files
+    refs, targets = scan_directory(json_dir)
+    
+    print(f"Found {len(refs)} References and {len(targets)} Targets.")
+    print("-" * 50)
+    
+    # 3. Batch Compare
+    full_report = {}
+    
+    for ref in refs:
+        ref_name = os.path.basename(ref).split('_landmarks')[0]
+        full_report[ref_name] = []
+        print(f"Processing Reference: {ref_name}...")
+        
+        for target in targets:
+            target_name = os.path.basename(target).split('_landmarks')[0]
+            
+            # Optional: Skip self-compare vs strict requirements.
+            # User said: "compare against all targets"
+            # It enables checking baseline = 0.0
+            
+            score = comparator.compare(ref, target)
+            full_report[ref_name].append((target_name, score))
 
-    print("\nFINAL RANKING (Lower is Better):")
-    for name, score in sorted(results.items(), key=lambda x: x[1]):
-        print(f"{score:.4f} : {name}")
+    # 4. Final Report
+    print("\n" + "="*50)
+    print("FINAL BATCH REPORT")
+    print("="*50)
+    
+    for ref_name, results in full_report.items():
+        print(f"\n=== RESULTADOS PARA: {ref_name} ===")
+        # Sort by score (Lower is better)
+        sorted_results = sorted(results, key=lambda x: x[1])
+        
+        for target_name, score in sorted_results:
+            # Heuristic for Print
+            status = "APROVADO" if score < 0.3 else "REPROVADO"
+            print(f"[{score:.4f}] {target_name} ({status})")
