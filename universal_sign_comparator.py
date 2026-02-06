@@ -252,16 +252,68 @@ class LibrasValidator:
         
         return norm_score, start, end
 
-    def plot_validation(self, ref_name, tgt_name, feat_seq, s, e, score, out_dir):
+    def plot_validation(self, ref_name, tgt_name, ref_feat, tgt_feat, s, e, score, out_dir):
         if not os.path.exists(out_dir): os.makedirs(out_dir)
-        plt.figure(figsize=(10, 5))
-        plt.plot(feat_seq[:, 0], color='lightgray', label='Start Stream')
+        
+        # Determine status
+        status = "APROVADO" if score < 0.6 else "REPROVADO"
+        color_status = 'green' if status == "APROVADO" else 'red'
+        
+        fig, axs = plt.subplots(2, 1, figsize=(12, 10))
+        
+        # Plot 1: Global Search in Target Stream
+        axs[0].plot(tgt_feat[:, 0], color='lightgray', label='Target Stream (Feature 0)', linewidth=1.5)
         if e > s:
-            plt.plot(range(s, e), feat_seq[s:e, 0], color='green', linewidth=2, label='Matched')
-        plt.title(f"{ref_name} vs {tgt_name} | Score: {score:.4f}")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(f"{out_dir}/{ref_name}_VS_{tgt_name}.png")
+            axs[0].plot(range(s, e), tgt_feat[s:e, 0], color=color_status, linewidth=2, label='Matched Segment')
+            axs[0].axvline(x=s, color='blue', linestyle='--', alpha=0.5, label='Start Match')
+            axs[0].axvline(x=e, color='blue', linestyle='--', alpha=0.5, label='End Match')
+            
+        axs[0].set_title(f"GLOBAL SEARCH: {tgt_name} (Target)", fontsize=12, fontweight='bold')
+        axs[0].set_ylabel("Normalized Feature (e.g. Thumb-Wrist)", fontsize=10)
+        axs[0].set_xlabel("Frame Index", fontsize=10)
+        axs[0].legend(loc='upper right')
+        axs[0].grid(True, alpha=0.3)
+        
+        # Plot 2: Detailed Comparison (Reference vs Matched Target)
+        # Resample reference to match target length for visual comparison? 
+        # Or just plot them on shared x-axis (0 to max len)? 
+        # Let's plot them as is to show speed differences. 
+        
+        axs[1].plot(ref_feat[:, 0], color='blue', label=f'Reference: {ref_name}', linewidth=2, linestyle='-')
+        
+        if e > s:
+            matched_segment = tgt_feat[s:e, 0]
+            # Center the matched segment for better visual overlap or just start at 0?
+            # Standard DTW comparison usually aligns them. Visualizing raw:
+            axs[1].plot(matched_segment, color='orange', label='Matched Target Segment', linewidth=2, linestyle='--')
+            
+        axs[1].set_title(f"DETAILED COMPARISON: Reference vs Match", fontsize=12, fontweight='bold')
+        axs[1].set_ylabel("Normalized Feature Value", fontsize=10)
+        axs[1].set_xlabel("Relative Frame Index", fontsize=10)
+        axs[1].legend(loc='upper right')
+        axs[1].grid(True, alpha=0.3)
+        
+        # Add Text Box with Stats
+        info_text = (
+            f"REF: {ref_name}\n"
+            f"TGT: {tgt_name}\n"
+            f"--------------------------\n"
+            f"SCORE: {score:.4f}\n"
+            f"STATUS: {status}\n"
+            f"--------------------------\n"
+            f"Match Range: {s} - {e}\n"
+            f"Ref Length: {len(ref_feat)}\n"
+            f"Match Length: {e - s}\n"
+        )
+        
+        # Place text box in top plot or side? Let's put it on the side of the figure or inside plot 1
+        # Using figtext for global positioning
+        plt.subplots_adjust(right=0.75)
+        fig.text(0.77, 0.5, info_text, fontsize=11, family='monospace', 
+                 bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+                 
+        plt.tight_layout(rect=[0, 0, 0.75, 1])
+        plt.savefig(f"{out_dir}/{ref_name}_VS_{tgt_name}.png", dpi=100)
         plt.close()
 
     def validate(self, ref_path, tgt_path, out_dir):
@@ -283,7 +335,7 @@ class LibrasValidator:
         ref_name = os.path.basename(ref_path).replace('.json', '').replace('_landmarks', '')
         tgt_name = os.path.basename(tgt_path).replace('.json', '').replace('_landmarks', '')
         
-        self.plot_validation(ref_name, tgt_name, t_feat, s, e, score, out_dir)
+        self.plot_validation(ref_name, tgt_name, r_feat, t_feat, s, e, score, out_dir)
         
         return score
 
