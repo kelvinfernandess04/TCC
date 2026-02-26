@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+versions.txt
+get_versions.py
+
+# Ignorar diretórios e arquivos de saída gerados
+results/
+*.log
+log*.txt
