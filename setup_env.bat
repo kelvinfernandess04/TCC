@@ -1,4 +1,5 @@
 @echo off
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "[datetime]::UtcNow.Ticks"`) do set START_TIME=%%i
 echo ==================================================
 echo       Setting up Python Environment (TCC)
 echo ==================================================
@@ -43,4 +44,6 @@ echo [SUCCESS] Environment setup complete!
 echo ==================================================
 echo.
 echo You can now use the run_*.bat scripts to launch the tools.
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "[datetime]::UtcNow.Ticks"`) do set END_TIME=%%i
+powershell -NoProfile -Command "$secs = [math]::Round(((%END_TIME% - %START_TIME%) / 10000000), 2); Write-Host \"`n[Timer] Tempo total de execucao de setup: $secs segundos\""
 pause

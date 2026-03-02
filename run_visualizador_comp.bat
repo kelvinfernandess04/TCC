@@ -4,5 +4,8 @@ if not exist "venv" (
     pause
     exit /b 1
 )
-python src/visualizador_comp.py
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "[datetime]::UtcNow.Ticks"`) do set START_TIME=%%i
+"venv\Scripts\python.exe" src/visualizador_comp.py
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "[datetime]::UtcNow.Ticks"`) do set END_TIME=%%i
+powershell -NoProfile -Command "$secs = [math]::Round(((%END_TIME% - %START_TIME%) / 10000000), 2); Write-Host \"`n[Timer] Tempo de execucao: $secs segundos\""
 pause
