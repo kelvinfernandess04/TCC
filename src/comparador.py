@@ -85,14 +85,14 @@ def get_hand_matrix(hand_arr):
         return np.zeros((HAND_LANDMARKS_COUNT, HAND_LANDMARKS_COUNT))
         
     p1 = hand_arr[:, np.newaxis, :]
-    p2 = hand_arr[np.newaxis, :, :]
+    p2 = hand_arr[np.newaxis, :]
     
     # Matriz 21x21 de distâncias
     dist_matrix = np.linalg.norm(p1 - p2, axis=2)
     return dist_matrix
 
 class KeyFrameData:
-    """Extrai e armazena os atributos linguísticos de um frame: Forma, Posição e Movimento."""
+    """ Representa o Esqueleto Ativo do Corpo em um Frame """
     def __init__(self, frame_data, idx, time_ms, prev_pa_l=None, prev_pa_r=None):
         self.idx = idx
         self.time_ms = time_ms
@@ -124,6 +124,58 @@ class KeyFrameData:
         # 4. Estado de Repouso
         hip_y = (self.pose[23][1] + self.pose[24][1]) / 2.0
         self.in_rest = (self.pa_l[1] > hip_y - 0.1) and (self.pa_r[1] > hip_y - 0.1)
+
+def numpy_sma_points(points_list, expected_size, window=5):
+    """Aplica uma Média Móvel Simples ignorando NaNs sobre uma série de vetores 3D"""
+    if not points_list:
+        return []
+    
+    # Substituir dicts de pontos por arrays fáceis de interpolar
+    arr = []
+    for pts in points_list:
+        if not pts:
+            arr.append(np.full((expected_size, 3), np.nan))
+        else:
+            tmp = np.full((expected_size, 3), np.nan)
+            for p in pts:
+                idx = p.get('id')
+                if idx is not None and 0 <= idx < expected_size:
+                    tmp[idx] = [p['x'], p['y'], p['z']]
+            arr.append(tmp)
+            
+    arr = np.array(arr)
+    smoothed = np.copy(arr)
+    
+    for i in range(len(arr)):
+        start = max(0, i - window // 2)
+        end = min(len(arr), i + window // 2 + 1)
+        # Evitar np.nanmean Warning se o bloco todo for NaN
+        with np.errstate(all='ignore'):
+            block_mean = np.nanmean(arr[start:end], axis=0)
+        # Onde a média retornou NaN (pq só tinha NaN), volta o array original (NaN)
+        smoothed[i] = np.where(np.isnan(block_mean), arr[i], block_mean)
+        
+    # Reconstruir dicts para compatibilidade
+    out_list = []
+    for i, pts in enumerate(points_list):
+        if not pts:
+            out_list.append(pts)
+            continue
+            
+        new_pts = []
+        for p in pts:
+            idx = p.get('id')
+            if idx is not None and 0 <= idx < expected_size and not np.isnan(smoothed[i][idx]).any():
+                new_p = p.copy()
+                new_p['x'] = float(smoothed[i][idx][0])
+                new_p['y'] = float(smoothed[i][idx][1])
+                new_p['z'] = float(smoothed[i][idx][2])
+                new_pts.append(new_p)
+            else:
+                new_pts.append(p)
+        out_list.append(new_pts)
+        
+    return out_list
 
 def extract_all_keyframes(frames_data):
     feats = []
@@ -162,8 +214,26 @@ def calc_keyframe_score(b_kf, t_kf):
     3. Movimento (10% do peso)
     """
     # 1. FORMA DA MÃO (0 a 60 pontos)
-    cm_err_l = np.mean(np.abs(t_kf.cm_l - b_kf.cm_l))
-    cm_err_r = np.mean(np.abs(t_kf.cm_r - b_kf.cm_r))
+    # Aplicação de Pesos Semânticos: Pontas dos dedos importam MUITO MAIS que a palma/pulso
+    # Pesos: [Pulso:0.2, Palma:0.5, Articulações:0.8, Intermediários:1.2, Pontas:2.0]
+    W = np.array([
+        0.2, # 0: Wrist
+        0.5, 0.8, 1.2, 2.0, # 1-4: Thumb
+        0.5, 0.8, 1.2, 2.0, # 5-8: Index
+        0.5, 0.8, 1.2, 2.0, # 9-12: Middle
+        0.5, 0.8, 1.2, 2.0, # 13-16: Ring
+        0.5, 0.8, 1.2, 2.0  # 17-20: Pinky
+    ])
+    # Matriz 21x21 de pesos cruzados (W_i * W_j)
+    W_matrix = np.outer(W, W)
+    # Normalizamos a matriz de pesos para que a escala do erro não estoure
+    W_matrix = W_matrix / np.mean(W_matrix)
+    
+    diff_l = np.abs(t_kf.cm_l - b_kf.cm_l) * W_matrix
+    diff_r = np.abs(t_kf.cm_r - b_kf.cm_r) * W_matrix
+    
+    cm_err_l = np.mean(diff_l)
+    cm_err_r = np.mean(diff_r)
     cm_err = (cm_err_l + cm_err_r) / 2.0
     
     # Tolerância a erro na Matriz de Distância 21x21.
