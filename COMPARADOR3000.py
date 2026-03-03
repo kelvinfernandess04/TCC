@@ -43,7 +43,7 @@ except ImportError:
 # Resumo (semi-arbitrário, ajuste conforme necessário):
 #   Dedos (postura da mão)  1.2 – 1.5
 #   Pulso                   1.0
-#   Antebraço               0.8
+#   Antebraço               1.3
 #   Braço                   0.6
 #   Ombros / coluna         0.2 – 0.3
 #   Pernas / cabeça / quadril  0.1
@@ -52,8 +52,8 @@ BONE_WEIGHTS = {
     # Tronco / cabeça — baixo peso
     "spine": 0.2, "hip": 0.1, "shoulders": 0.3,
     # Braços — peso médio/alto
-    "upper_arm_L": 0.6, "lower_arm_L": 0.8, "hand_L": 1.0,
-    "upper_arm_R": 0.6, "lower_arm_R": 0.8, "hand_R": 1.0,
+    "upper_arm_L": 0.6, "lower_arm_L": 1.3, "hand_L": 1.0,
+    "upper_arm_R": 0.6, "lower_arm_R": 1.3, "hand_R": 1.0,
     # Pernas — baixo peso
     "upper_leg_L": 0.1, "lower_leg_L": 0.1, "foot_L": 0.1,
     "upper_leg_R": 0.1, "lower_leg_R": 0.1, "foot_R": 0.1,
@@ -256,12 +256,13 @@ def extract_palm_normals_per_frame(frames: list, hand_side: str) -> list:
     return normals
 
 
-def palm_orientation_similarity(normals_a: list, normals_b: list) -> dict:
+def palm_orientation_similarity(normals_a: list, normals_b: list, frame_weights: np.ndarray = None) -> dict:
     """
     Compara as normais de palma entre dois vídeos.
-    Retorna métricas de similaridade de orientação.
+    frame_weights: pesos por frame (reduz importância dos frames de repouso).
     """
     angle_diffs = []
+    weights_used = []
     valid_frames = 0
 
     length = min(len(normals_a), len(normals_b))
@@ -269,6 +270,8 @@ def palm_orientation_similarity(normals_a: list, normals_b: list) -> dict:
         na, nb = normals_a[i], normals_b[i]
         if na is not None and nb is not None:
             angle_diffs.append(angle_between(na, nb))
+            w = float(frame_weights[i]) if frame_weights is not None and i < len(frame_weights) else 1.0
+            weights_used.append(w)
             valid_frames += 1
 
     if not angle_diffs:
@@ -280,8 +283,12 @@ def palm_orientation_similarity(normals_a: list, normals_b: list) -> dict:
             "orientation_b": None,
         }
 
-    mean_diff = float(np.mean(angle_diffs))
-    # Curva exponencial — penaliza desvios grandes (90° de diferença → ~16%, não 50%)
+    # Média ponderada — frames de repouso têm menos influência
+    arr = np.array(angle_diffs)
+    w_arr = np.array(weights_used)
+    mean_diff = float(np.average(arr, weights=w_arr)) if w_arr.sum() > 0 else float(np.mean(arr))
+
+    # Curva exponencial — penaliza desvios grandes (90° → ~16%, não 50%)
     similarity_pct = angle_to_similarity(mean_diff, steepness=3.0)
 
     # Orientação predominante de cada vídeo
@@ -366,6 +373,52 @@ def normalize_sequence(seq: np.ndarray) -> np.ndarray:
     y_old = seq[valid]
     x_new = np.linspace(x_old[0], x_old[-1], 100)
     return np.interp(x_new, x_old, y_old)
+
+
+def build_rest_weights(n_frames: int, fps: float, rest_sec: float = 1.0, rest_weight: float = 0.1) -> np.ndarray:
+    """
+    Gera um array de pesos por frame que reduz a importância dos frames
+    de repouso no início e no fim do vídeo — padrão comum em libras onde
+    os atores começam e terminam com as mãos abaixadas.
+
+    n_frames   : número total de frames do vídeo
+    fps        : frames por segundo do vídeo
+    rest_sec   : duração (em segundos) considerada "repouso" no início e fim
+    rest_weight: peso mínimo aplicado aos frames de repouso (0.1 = 10% do peso normal)
+
+    Transição suave (rampa linear) entre rest_weight e 1.0 para evitar
+    descontinuidade brusca na região de fronteira.
+    """
+    rest_frames = int(fps * rest_sec)
+    weights = np.ones(n_frames)
+
+    for i in range(n_frames):
+        # Distância às bordas (início e fim)
+        dist_start = i
+        dist_end   = n_frames - 1 - i
+        dist_edge  = min(dist_start, dist_end)
+
+        if dist_edge < rest_frames:
+            # Rampa linear: 0 → rest_weight na borda, 1.0 na fronteira
+            t = dist_edge / rest_frames          # 0.0 na borda, 1.0 na fronteira
+            weights[i] = rest_weight + (1.0 - rest_weight) * t
+
+    return weights
+
+
+def weighted_mean_angle(angle_diffs: np.ndarray, frame_weights: np.ndarray) -> float | None:
+    """
+    Média ponderada dos ângulos de diferença, ignorando NaNs.
+    frame_weights deve ter o mesmo tamanho que angle_diffs.
+    """
+    valid = ~np.isnan(angle_diffs)
+    if not np.any(valid):
+        return None
+    w = frame_weights[:len(angle_diffs)][valid]
+    a = angle_diffs[valid]
+    if w.sum() < 1e-9:
+        return None
+    return float(np.average(a, weights=w))
 
 
 # ─────────────────────────────────────────────
@@ -604,6 +657,19 @@ def analyze_similarity(json_a: dict, json_b: dict) -> dict:
     frames_a = json_a["frames"]
     frames_b = json_b["frames"]
 
+    fps_a = json_a["video_info"].get("fps", 30.0)
+    fps_b = json_b["video_info"].get("fps", 30.0)
+
+    # Pesos temporais: reduz importância dos frames de repouso no início e fim
+    # (padrão em libras — atores começam/terminam com mãos abaixadas)
+    rest_weights_a = build_rest_weights(len(frames_a), fps_a)
+    rest_weights_b = build_rest_weights(len(frames_b), fps_b)
+
+    # Para comparação frame a frame, usamos o mínimo dos dois pesos
+    # (se qualquer um dos vídeos está em repouso naquele ponto, o frame é menos relevante)
+    n_common = min(len(frames_a), len(frames_b))
+    frame_weights = np.minimum(rest_weights_a[:n_common], rest_weights_b[:n_common])
+
     results = {}
 
     groups = [
@@ -625,11 +691,11 @@ def analyze_similarity(json_a: dict, json_b: dict) -> dict:
                 np.array([v[0] if v is not None else np.nan for v in series_b[name]])
             )
 
-            # Ângulo médio de diferença entre os vetores normalizados
+            # Ângulo médio ponderado — frames de repouso (início/fim) têm menor peso
             raw_a = series_a[name]
             raw_b = series_b[name]
             angle_diffs = series_to_angle_diff(raw_a, raw_b)
-            mean_angle_diff = float(np.nanmean(angle_diffs)) if not np.all(np.isnan(angle_diffs)) else None
+            mean_angle_diff = weighted_mean_angle(angle_diffs, frame_weights)
 
             # DTW na série temporal normalizada (sequência completa)
             dtw_dist = compute_dtw_distance(sa, sb)
@@ -684,7 +750,7 @@ def analyze_similarity(json_a: dict, json_b: dict) -> dict:
     for side, label in [("Left", "Mão Esquerda"), ("Right", "Mão Direita")]:
         normals_a = extract_palm_normals_per_frame(frames_a, side)
         normals_b = extract_palm_normals_per_frame(frames_b, side)
-        palm_sim = palm_orientation_similarity(normals_a, normals_b)
+        palm_sim = palm_orientation_similarity(normals_a, normals_b, frame_weights)
 
         key = f"_palm_{side.lower()}"
         results[key] = palm_sim
@@ -707,7 +773,7 @@ def analyze_similarity(json_a: dict, json_b: dict) -> dict:
             dirs_a = extract_hand_dir(frames_a, side)
             dirs_b = extract_hand_dir(frames_b, side)
             dir_diffs = series_to_angle_diff(dirs_a, dirs_b)
-            mean_dir_diff = float(np.nanmean(dir_diffs)) if not np.all(np.isnan(dir_diffs)) else None
+            mean_dir_diff = weighted_mean_angle(dir_diffs, frame_weights)
 
             dir_sim = angle_to_similarity(mean_dir_diff, steepness=3.5) if mean_dir_diff is not None else None
             dir_weight = 4.0  # maior peso de todos — é o indicador mais visível de orientação errada
