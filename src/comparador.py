@@ -10,7 +10,7 @@ POSE_LANDMARKS_COUNT = 33
 HAND_LANDMARKS_COUNT = 21
 
 RESULTS_DIR = "results"
-PASS_THRESHOLD = 75.0
+PASS_THRESHOLD = 71.0
 
 def load_json(path):
     with open(path, 'r', encoding='utf-8') as f:
@@ -75,21 +75,70 @@ def normalize_spatial(frame_data):
             
     return norm_pose, norm_left, norm_right
 
-def get_hand_matrix(hand_arr):
+def get_semantic_zone(hand_wrist, pose_arr):
     """
-    Calcula uma Matriz 21x21 de Distâncias Topológicas.
-    Essa matriz contém a distância Euclidiana de CADA ponto da mão para TODOS os outros pontos.
-    Garante imunidade total à rotação e espelhamento da câmera.
+    Identifica a Caixa Delimitadora Semântica (Bounding Box) onde a mão está.
+    Classifica em: FACE, CHEST, BELLY, SHOULDER_L, SHOULDER_R, HIP_L, HIP_R, OUT_OF_BOUNDS
+    """
+    if np.isnan(hand_wrist).all() or np.isnan(pose_arr).all():
+        return "UNKNOWN"
+    
+    hx, hy = hand_wrist[0], hand_wrist[1]
+    
+    # Referências do corpo normalize_spatial:
+    # 0: Nariz, 11/12: Ombros, 23/24: Quadris
+    nose_y = pose_arr[0][1]
+    shoulder_y = (pose_arr[11][1] + pose_arr[12][1]) / 2.0
+    hip_y = (pose_arr[23][1] + pose_arr[24][1]) / 2.0
+    chest_y = (shoulder_y + hip_y) / 2.0
+    
+    shoulder_lx, shoulder_rx = pose_arr[11][0], pose_arr[12][0]
+    
+    if hy < nose_y + 0.15: 
+        return "FACE"
+    
+    if hy >= nose_y + 0.15 and hy < chest_y:
+        # Altura do peito/ombro, vamos checar a lateralidade
+        if hx < shoulder_rx - 0.2: return "SHOULDER_R_OUT"
+        if hx > shoulder_lx + 0.2: return "SHOULDER_L_OUT"
+        return "CHEST"
+        
+    if hy >= chest_y and hy < hip_y:
+        return "BELLY"
+        
+    if hy >= hip_y:
+        if hx < shoulder_rx - 0.2: return "HIP_R_OUT"
+        if hx > shoulder_lx + 0.2: return "HIP_L_OUT"
+        return "HIP_REST"
+        
+    return "OUT_OF_BOUNDS"
+
+def get_finger_vectors(hand_arr):
+    """
+    Extrai vetores direcionais (Cosseno) dos 5 dedos em vez de uma matriz rígida.
+    Nós capturamos a INTENÇÃO do dedo (dobrado vs esticado) ignorando a rotação global do pulso.
+    Os vetores de interesse são:
+    - Thumb:  Ponta (4) -> Base (2)
+    - Index:  Ponta (8) -> Base (5)
+    - Middle: Ponta (12) -> Base (9)
+    - Ring:   Ponta (16) -> Base (13)
+    - Pinky:  Ponta (20) -> Base (17)
     """
     if np.isnan(hand_arr).all(): 
-        return np.zeros((HAND_LANDMARKS_COUNT, HAND_LANDMARKS_COUNT))
+        return np.zeros((5, 3))
         
-    p1 = hand_arr[:, np.newaxis, :]
-    p2 = hand_arr[np.newaxis, :]
+    vecs = np.zeros((5, 3))
     
-    # Matriz 21x21 de distâncias
-    dist_matrix = np.linalg.norm(p1 - p2, axis=2)
-    return dist_matrix
+    # Pares: Ponta, Base
+    pairs = [(4, 2), (8, 5), (12, 9), (16, 13), (20, 17)]
+    
+    for i, (tip, base) in enumerate(pairs):
+        v = hand_arr[tip] - hand_arr[base]
+        norm = np.linalg.norm(v)
+        if norm > 1e-6:
+            vecs[i] = v / norm # Vetor unitário para focar puramente em direção/dobra
+            
+    return vecs
 
 class KeyFrameData:
     """ Representa o Esqueleto Ativo do Corpo em um Frame """
@@ -100,15 +149,15 @@ class KeyFrameData:
         self.is_valid = self.pose is not None
         
         if not self.is_valid:
-            self.cm_l = self.cm_r = np.zeros((HAND_LANDMARKS_COUNT, HAND_LANDMARKS_COUNT))
+            self.vec_l = self.vec_r = np.zeros((5, 3))
             self.pa_l = self.pa_r = np.zeros(2)
             self.delta_l = self.delta_r = np.zeros(2)
             self.in_rest = True
             return
             
-        # 1. Forma da Mão (CM) - Matriz 21x21
-        self.cm_l = get_hand_matrix(self.left)
-        self.cm_r = get_hand_matrix(self.right)
+        # 1. Forma da Mão (Vetores Morfológicos)
+        self.vec_l = get_finger_vectors(self.left)
+        self.vec_r = get_finger_vectors(self.right)
         
         # 2. Posição (PA) - Pulsos relativos ao ombro (âncora)
         p15 = self.pose[15][:2]
@@ -116,6 +165,10 @@ class KeyFrameData:
         self.pa_l = p15 if not np.isnan(p15).all() else np.zeros(2)
         self.pa_r = p16 if not np.isnan(p16).all() else np.zeros(2)
         self.rel_hands = self.pa_l - self.pa_r
+        
+        # 3. Ponto de Articulação (Bounding Box Semântica)
+        self.zone_l = get_semantic_zone(self.pa_l, self.pose)
+        self.zone_r = get_semantic_zone(self.pa_r, self.pose)
         
         # 3. Movimento (Delta Direcional)
         self.delta_l = self.pa_l - prev_pa_l if prev_pa_l is not None else np.zeros(2)
@@ -187,24 +240,61 @@ def extract_all_keyframes(frames_data):
         feats.append(kf)
     return feats
 
-def extract_base_sequence(base_feats):
-    """Extrai uma sequência enxuta de Keyframes estruturais da Base para deslizar no Target."""
+def extract_base_sequence(base_feats, max_events=5):
+    """
+    ARQUITETURA ORIENTADA A EVENTOS:
+    Extrai apenas os frames cruciais (State Machine) baseados nas curvas de movimento,
+    destruindo o DTW contínuo em favor de validação discreta de pontos chave.
+    - Captura o INÍCIO e o FIM absolutos do movimento.
+    - Captura picos de mínima velocidade (pausas no ar / ápices da articulação).
+    - Captura picos de máxima velocidade (transições fortes).
+    """
     valid_idxs = [i for i, f in enumerate(base_feats) if f.is_valid and not f.in_rest]
     if not valid_idxs: 
         return []
+        
+    if len(valid_idxs) <= max_events:
+        return [base_feats[i] for i in valid_idxs]
+        
+    # Calcular a velocidade global (somatória dos deltas) de cada frame ativo
+    velocities = []
+    for i in valid_idxs:
+        kf = base_feats[i]
+        v = np.linalg.norm(kf.delta_l) + np.linalg.norm(kf.delta_r)
+        velocities.append(v)
+        
+    selected_idxs = [valid_idxs[0], valid_idxs[-1]]
     
-    # Vamos gerar Keyframes dinamicamente nas mudanças de velocidade, ou a cada N frames para mapear o fluir do sinal
-    # Para garantir uma comparação rica, extrairemos 1 keyframe a cada 3 frames ativos (redução de dimensionalidade sem perder o movimento)
-    sequence = []
-    for i in range(0, len(valid_idxs), 3): # Sample rate
-        idx = valid_idxs[i]
-        sequence.append(base_feats[idx])
-        
-    # Assegurar que o último frame ativo está na sequência
-    if valid_idxs[-1] != sequence[-1].idx:
-        sequence.append(base_feats[valid_idxs[-1]])
-        
-    return sequence
+    # Procurar por Mínimos Locais de velocidade (Pausas Táticas do sinal)
+    minima = []
+    for j in range(1, len(velocities)-1):
+        if velocities[j] < velocities[j-1] and velocities[j] < velocities[j+1]:
+            minima.append((valid_idxs[j], velocities[j]))
+            
+    # Dar preferência para as pausas mais "congeladas"
+    minima.sort(key=lambda x: x[1])
+    
+    for p_idx, _ in minima:
+        if len(selected_idxs) >= max_events: break
+        # Não pegar frames grudados (debounce de 5 frames)
+        if not any(abs(p_idx - existing) < 5 for existing in selected_idxs):
+            selected_idxs.append(p_idx)
+            
+    # Se ainda sobrar espaço na Máquina de Estados, pegar os picos de Máxima Velocidade (Transições Cruciais)
+    if len(selected_idxs) < max_events:
+        maxima = []
+        for j in range(1, len(velocities)-1):
+             if velocities[j] > velocities[j-1] and velocities[j] > velocities[j+1]:
+                 maxima.append((valid_idxs[j], velocities[j]))
+                 
+        maxima.sort(key=lambda x: x[1], reverse=True) # Preferir os movimentos mais explosivos
+        for p_idx, _ in maxima:
+             if len(selected_idxs) >= max_events: break
+             if not any(abs(p_idx - existing) < 5 for existing in selected_idxs):
+                 selected_idxs.append(p_idx)
+                 
+    selected_idxs.sort()
+    return [base_feats[i] for i in selected_idxs]
 
 def calc_keyframe_score(b_kf, t_kf):
     """
@@ -213,34 +303,48 @@ def calc_keyframe_score(b_kf, t_kf):
     2. Posição no Corpo (30% do peso)
     3. Movimento (10% do peso)
     """
-    # 1. FORMA DA MÃO (0 a 60 pontos)
-    # Aplicação de Pesos Semânticos: Pontas dos dedos importam MUITO MAIS que a palma/pulso
-    # Pesos: [Pulso:0.2, Palma:0.5, Articulações:0.8, Intermediários:1.2, Pontas:2.0]
-    W = np.array([
-        0.2, # 0: Wrist
-        0.5, 0.8, 1.2, 2.0, # 1-4: Thumb
-        0.5, 0.8, 1.2, 2.0, # 5-8: Index
-        0.5, 0.8, 1.2, 2.0, # 9-12: Middle
-        0.5, 0.8, 1.2, 2.0, # 13-16: Ring
-        0.5, 0.8, 1.2, 2.0  # 17-20: Pinky
-    ])
-    # Matriz 21x21 de pesos cruzados (W_i * W_j)
-    W_matrix = np.outer(W, W)
-    # Normalizamos a matriz de pesos para que a escala do erro não estoure
-    W_matrix = W_matrix / np.mean(W_matrix)
+    # 1. FORMA DA MÃO (CONFIGURAÇÃO DE DEDOS - 0 a 60 pontos)
+    # Cosine Similarity entre os vetores falange-base de cada um dos 5 dedos.
     
-    diff_l = np.abs(t_kf.cm_l - b_kf.cm_l) * W_matrix
-    diff_r = np.abs(t_kf.cm_r - b_kf.cm_r) * W_matrix
+    def score_vectors(v_tgt, v_base):
+        if np.all(v_base == 0) and np.all(v_tgt == 0): return 60.0 # Ambas nulas (OK)
+        if np.all(v_base == 0) or np.all(v_tgt == 0): return 0.0   # Mão sumiu
+        
+        # Similaridade de cosseno de cada dedo
+        dot_products = np.sum(v_tgt * v_base, axis=1) # (5,)
+        norm_t = np.linalg.norm(v_tgt, axis=1)
+        norm_b = np.linalg.norm(v_base, axis=1)
+        
+        valid = (norm_t > 0) & (norm_b > 0)
+        if not np.any(valid): return 0.0
+        
+        cos_sims = dot_products[valid] / (norm_t[valid] * norm_b[valid])
+        
+        # Mapeando Cos Sim [-1.0 a 1.0] para Erro [0.0 a 1.0]
+        # Se 1.0 (Mesma direção) -> Erro 0.0
+        # Se 0.0 (Ortogonal) -> Erro 0.5
+        # Se -1.0 (Dedo invertido) -> Erro 1.0
+        errors = (1.0 - cos_sims) / 2.0
+        
+        avg_err = np.mean(errors)
+        
+        # Tolerância de 0.2 de erro angular médio (aprox 36 graus de liberdade na dobra)
+        return max(0.0, 60.0 * (1.0 - (avg_err / 0.2)))
+        
+    shape_score_l = score_vectors(t_kf.vec_l, b_kf.vec_l)
+    shape_score_r = score_vectors(t_kf.vec_r, b_kf.vec_r)
     
-    cm_err_l = np.mean(diff_l)
-    cm_err_r = np.mean(diff_r)
-    cm_err = (cm_err_l + cm_err_r) / 2.0
-    
-    # Tolerância a erro na Matriz de Distância 21x21.
-    # Distâncias médias aceitáveis oscilam entre 0.04 e 0.12 dependendo da câmera.
-    # Erros maiores que 0.35 indicam formas violentamente diferentes (ex: punho cerrado vs mão aberta).
-    # O valor foi relaxado para englobar variações reais de tamanho/profundidade de mãos diferentes.
-    shape_score = max(0.0, 60.0 * (1.0 - (cm_err / 0.35)))
+    # Se a mão base existe (não é 0), a respectiva mão target deve pontuar
+    active_hands = 0
+    total_shape = 0
+    if not np.all(b_kf.vec_l == 0):
+        active_hands += 1
+        total_shape += shape_score_l
+    if not np.all(b_kf.vec_r == 0):
+        active_hands += 1
+        total_shape += shape_score_r
+        
+    shape_score = total_shape / active_hands if active_hands > 0 else 60.0
     
     # 2. POSIÇÃO (0 a 30 pontos)
     pa_err_l = np.linalg.norm(t_kf.pa_l - b_kf.pa_l)
@@ -253,6 +357,16 @@ def calc_keyframe_score(b_kf, t_kf):
     
     # Mapear 0.0 dist -> 30 pontos | 1.5 dist (extensão do braço) -> 0 pontos
     pos_score = max(0.0, 30.0 * (1.0 - (pa_err / 1.5)))
+    
+    # --- VETO SEMÂNTICO DE PONTO DE ARTICULAÇÃO ---
+    # Se a zona da mão divergir da Base, aplicamos VETO na nota de posição
+    # pois o sinal está sendo executado no local errado do corpo.
+    if b_kf.zone_l != "UNKNOWN" and t_kf.zone_l != "UNKNOWN" and b_kf.zone_l != t_kf.zone_l:
+        # Penaliza cortando 15 pontos se errou a zona da mão ativa
+        pos_score = max(0.0, pos_score - 15.0)
+        
+    if b_kf.zone_r != "UNKNOWN" and t_kf.zone_r != "UNKNOWN" and b_kf.zone_r != t_kf.zone_r:
+        pos_score = max(0.0, pos_score - 15.0)
     
     # 3. MOVIMENTO (0 a 10 pontos)
     v_b = b_kf.delta_l + b_kf.delta_r
@@ -288,6 +402,7 @@ def sequence_alignment_dtw(base_sequence, target_feats):
     N_b = len(base_sequence)
     N_t = len(target_feats)
     
+    raw_score_matrix = np.zeros((N_b, N_t))
     score_matrix = np.zeros((N_b, N_t))
     details_matrix = [[None for _ in range(N_t)] for _ in range(N_b)]
     
@@ -296,8 +411,19 @@ def sequence_alignment_dtw(base_sequence, target_feats):
             if not target_feats[j].is_valid:
                 continue
             s, shp, pos, mov = calc_keyframe_score(base_sequence[i], target_feats[j])
-            score_matrix[i, j] = s
+            raw_score_matrix[i, j] = s
             details_matrix[i][j] = (shp, pos, mov)
+            
+    # Iteração 27: State Persistence Layer (N-Frame Buffer)
+    # Para matar o flicker do MediaPipe, um frame target só pode ter nota alta
+    # se ele sustentar essa nota nos frames adjacentes (buffer temporal).
+    for i in range(N_b):
+        for j in range(N_t):
+            # Média ao redor de j (tamanho 3)
+            start_j = max(0, j - 1)
+            end_j = min(N_t, j + 2)
+            block = raw_score_matrix[i, start_j:end_j]
+            score_matrix[i, j] = np.mean(block) if len(block) > 0 else 0.0
             
     # dp[i, j] armazena o melhor score acumulado alinhando base(0..i) até target(j)
     dp = np.full((N_b, N_t), -1.0)
@@ -451,6 +577,10 @@ def main():
         if not b_frames: 
             continue
         
+        tp_scores = []
+        fp_scores = []
+        
+        
         base_feats = extract_all_keyframes(b_frames)
         base_seq = extract_base_sequence(base_feats)
         
@@ -481,11 +611,19 @@ def main():
             t_sign = get_sign_name(target_name)
             is_same = (b_sign == t_sign)
             if is_same:
-                if status == "PASS": tp += 1
-                else: fn_count += 1
+                if status == "PASS": 
+                    tp += 1
+                    tp_scores.append(score)
+                else: 
+                    fn_count += 1
+                    tp_scores.append(score)
             else:
-                if status != "PASS": tn += 1
-                else: fp += 1
+                if status != "PASS": 
+                    tn += 1
+                    fp_scores.append(score)
+                else: 
+                    fp += 1
+                    fp_scores.append(score)
                 
             total_comps += 1
             
@@ -507,6 +645,13 @@ def main():
 
     exec_time = time.time() - start_time
     
+    min_tp = min(tp_scores) if tp_scores else 0.0
+    max_fp = max(fp_scores) if fp_scores else 0.0
+    avg_tp = sum(tp_scores) / len(tp_scores) if tp_scores else 0.0
+    avg_fp = sum(fp_scores) / len(fp_scores) if fp_scores else 0.0
+    margin = avg_tp - avg_fp
+    critical_margin = min_tp - max_fp
+    
     stats_text = [
         "",
         "="*90,
@@ -519,6 +664,13 @@ def main():
         f"Falsos Negativos   (Sinal Certo, Reprovado): {fn_count}",
         f"Verdadeiros Negat. (Sinal Errado, Bloqueado) : {tn}",
         f"Falsos Positivos   (Sinal Errado, Vazou)   : {fp}",
+        "-"*90,
+        f"Menor Nota (Sinal Certo) : {min_tp:.1f}",
+        f"Maior Nota (Sinal Errado): {max_fp:.1f}",
+        f"MÉDIA Sinais Certos (TP) : {avg_tp:.1f}",
+        f"MÉDIA Sinais Errados(FP) : {avg_fp:.1f}",
+        f"MARGEM GERAL (Avg_TP - Avg_FP): {margin:.1f}",
+        f"MARGEM CRÍTICA (Min_TP - Max_FP): {critical_margin:.1f}",
         "-"*90,
         f"Precisão (100% = Zera Falsos Positivos): {tp/(tp+fp) if (tp+fp) else 0.0:.2%}",
         f"Recall   (100% = Aceita toda variação) : {tp/(tp+fn_count) if (tp+fn_count) else 0.0:.2%}",

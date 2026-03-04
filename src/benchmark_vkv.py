@@ -1,7 +1,7 @@
 import os, sys, glob, time, json
 
-# Adiciona o diretório TCC vKV ao path para importar o COMPARADOR3000
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'TCC vKV'))
+# Adiciona o diretório raiz TCC ao path para importar o COMPARADOR3000
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 try:
     from COMPARADOR3000 import analyze_similarity
 except ImportError as e:
@@ -44,6 +44,9 @@ def main():
     tp, fn_count, tn, fp = 0, 0, 0, 0
     total_comps = 0
     
+    tp_scores = []
+    fp_scores = []
+    
     report_lines = []
     
     start_time = time.time()
@@ -85,10 +88,18 @@ def main():
             status_str = "PASS" if passed else "FAIL"
             report_lines.append(f"{status_str:<10} | {score:<8.1f} | {tgt_name}")
             
-            if is_match and passed: tp += 1
-            elif is_match and not passed: fn_count += 1
-            elif not is_match and not passed: tn += 1
-            elif not is_match and passed: fp += 1
+            if is_match and passed: 
+                tp += 1
+                tp_scores.append(score)
+            elif is_match and not passed: 
+                fn_count += 1
+                tp_scores.append(score) # Adiciona todos os scores da base real pra achar o mínimo
+            elif not is_match and not passed: 
+                tn += 1
+                fp_scores.append(score) # Adiciona todos os falsos para achar o topo
+            elif not is_match and passed: 
+                fp += 1
+                fp_scores.append(score)
             
             total_comps += 1
 
@@ -97,6 +108,12 @@ def main():
     precision = (tp / (tp + fp) * 100) if (tp + fp) > 0 else 0
     recall = (tp / (tp + fn_count) * 100) if (tp + fn_count) > 0 else 0
     specificity = (tn / (tn + fp) * 100) if (tn + fp) > 0 else 0
+    min_tp = min(tp_scores) if tp_scores else 0.0
+    max_fp = max(fp_scores) if fp_scores else 0.0
+    avg_tp = sum(tp_scores) / len(tp_scores) if tp_scores else 0.0
+    avg_fp = sum(fp_scores) / len(fp_scores) if fp_scores else 0.0
+    margin = avg_tp - avg_fp
+    critical_margin = min_tp - max_fp
     
     report_lines.append("\n" + "="*90)
     report_lines.append(" RESUMO ESTATÍSTICO DE CONFIABILIDADE (COMPARADOR3000) ".center(90))
@@ -108,6 +125,13 @@ def main():
     report_lines.append(f"Falsos Negativos   (Sinal Certo, Reprovado): {fn_count}")
     report_lines.append(f"Verdadeiros Negat. (Sinal Errado, Bloqueado) : {tn}")
     report_lines.append(f"Falsos Positivos   (Sinal Errado, Vazou)   : {fp}")
+    report_lines.append("-" * 90)
+    report_lines.append(f"Menor Nota (Sinal Certo) : {min_tp:.1f}")
+    report_lines.append(f"Maior Nota (Sinal Errado): {max_fp:.1f}")
+    report_lines.append(f"MÉDIA Sinais Certos (TP) : {avg_tp:.1f}")
+    report_lines.append(f"MÉDIA Sinais Errados(FP) : {avg_fp:.1f}")
+    report_lines.append(f"MARGEM GERAL (Avg_TP - Avg_FP): {margin:.1f}")
+    report_lines.append(f"MARGEM CRÍTICA (Min_TP - Max_FP): {critical_margin:.1f}")
     report_lines.append("-" * 90)
     report_lines.append(f"Precisão (100% = Zera Falsos Positivos): {precision:.2f}%")
     report_lines.append(f"Recall   (100% = Aceita toda variação) : {recall:.2f}%")
