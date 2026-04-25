@@ -1,0 +1,41 @@
+# ==================================
+# IGNORAR ARQUIVOS PESADOS DA BASE
+# ==================================
+# Bloquear ativamente todos os arquivos e pastas da pasta de Datasets...
+Treinamento IA/datasets/**
+
+# Pesos de IA e Matrizes 
+*.h5
+*.tflite
+*.pb
+*.npy
+
+# Cache de IA e Treinamento
+extraction_cache.json
+Treinamento IA/unified_cache/
+nao_usadas/**
+
+# ==================================
+# LINGUAGENS E AMBIENTES (PYTHON/JS)
+# ==================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+.env
+
+# Configurações Front-End (POC)
+node_modules/
+.expo/
+package-lock.json
+
+# ==================================
+# ARTEFATOS REMANESCENTES DO SISTEMA
+# ==================================
+data/
+results/
+.DS_Store
+Thumbs.db
