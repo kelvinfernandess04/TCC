@@ -213,7 +213,7 @@ class DynamicSandbox:
                 r_shoulder = results.pose_landmarks.landmark[12]
                 body_mid_x = (l_shoulder.x + r_shoulder.x) / 2.0
                 body_mid_y = (l_shoulder.y + r_shoulder.y) / 2.0
-                self.mp_draw.draw_landmarks(frame, results.pose_landmarks, self.mp_holistic.POSE_CONNECTIONS)
+                # Pose removida visualmente para não gerar pontos fantasmas sobre a mão
                 
             if results.left_hand_landmarks:
                 frame_data["left"], wrist_left_px = self.process_hand(
