@@ -148,7 +148,7 @@ def run_extraction():
     
     if not pending_jobs:
         print("[EXTRACTOR] Pulo rápido. Base em cache está 100% atualizada.")
-        return 
+        return cache, pending_jobs, None
 
     # --- MULTIPROCESSING ---
     cores = max(1, multiprocessing.cpu_count() - 1) # Deixa 1 núcleo livre
@@ -184,4 +184,49 @@ def run_extraction():
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    run_extraction()
+    cache, pending_jobs, start_time = run_extraction()
+    # ---------------------------
+    # Relatório final de extração
+    # ---------------------------
+    import json, os, time
+    report_path = os.path.join(os.path.dirname(__file__), "extraction_report.json")
+    # Agrega estatísticas por dataset
+    dataset_stats = {}
+    total_success = total_nohand = total_ignored = total_error = 0
+    for key, val in cache.items():
+        status = val.get("status")
+        if status == "success":
+            total_success += 1
+            # extrair caminho relativo ao dataset (primeiro diretório dentro de DATASETS_DIR)
+            path_parts = key.split("_")
+            if len(path_parts) >= 2:
+                full_path = "_".join(path_parts[1:-2])
+                rel = os.path.relpath(full_path, DATASETS_DIR)
+                dataset_name = rel.split(os.sep)[0]
+                dataset_stats.setdefault(dataset_name, {"found":0,"used":0})
+                dataset_stats[dataset_name]["found"] += 1
+                dataset_stats[dataset_name]["used"] += 1
+        elif status == "no_hand":
+            total_nohand += 1
+        elif status == "ignored":
+            total_ignored += 1
+        elif status == "error":
+            total_error += 1
+    total_jobs = len(cache)
+    elapsed = time.time() - start_time if start_time else 0
+    mins, secs = divmod(int(elapsed), 60)
+    report = {
+        "total_images_discovered": len(pending_jobs),
+        "total_jobs": total_jobs,
+        "total_success": total_success,
+        "total_no_hand": total_nohand,
+        "total_ignored": total_ignored,
+        "total_error": total_error,
+        "elapsed_time": f"{mins}m{secs}s",
+        "cpu_cores_used": max(1, multiprocessing.cpu_count() - 1),
+        "chunk_size": 500,
+        "dataset_breakdown": dataset_stats
+    }
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    print("\n[EXTRACTOR] Relatório de extração salvo em:", report_path)

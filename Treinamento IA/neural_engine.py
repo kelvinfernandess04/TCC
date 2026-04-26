@@ -151,19 +151,42 @@ def run_neural_engine():
                   loss='sparse_categorical_crossentropy',
                   metrics=['accuracy'])
 
+    # ---------------------------
+    # Treinamento da Neural Engine
+    # ---------------------------
+    import time
+    # early stopping callback to avoid overfitting
     early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
-
-    logging.info(f"--- [FASE 4] Treinamento de {num_classes} classes ativado... ---")
-    model.fit(X_train, y_train, epochs=150, batch_size=64, validation_data=(X_test, y_test), callbacks=[early_stopping])
-
+    start_train = time.time()
+    # Fit retorna History
+    history = model.fit(X_train, y_train, epochs=150, batch_size=64, validation_data=(X_test, y_test), callbacks=[early_stopping])
+    elapsed_train = time.time() - start_train
+    mins, secs = divmod(int(elapsed_train), 60)
+    # Relatório resumido
+    training_report_path = os.path.join(os.path.dirname(__file__), "training_report.json")
+    training_summary = {
+        "total_original_samples": len(X),
+        "total_augmented_samples": len(augmented_X),
+        "num_classes": num_classes,
+        "final_train_accuracy": float(history.history.get('accuracy', [0])[-1]),
+        "final_train_loss": float(history.history.get('loss', [0])[-1]),
+        "final_val_accuracy": float(history.history.get('val_accuracy', [0])[-1]),
+        "final_val_loss": float(history.history.get('val_loss', [0])[-1]),
+        "epochs_trained": len(history.history.get('accuracy', [])),
+        "training_time": f"{mins}m{secs}s"
+    }
+    with open(training_report_path, "w", encoding="utf-8") as f:
+        json.dump(training_summary, f, indent=2, ensure_ascii=False)
+    print("\n[TRAINING] Relatório salvo em:", training_report_path)
+    # ---------------------------
+    # Compilando TFLite e Labels
+    # ---------------------------
     logging.info("--- [FASE 5] Compilando TFLite e Labels ---")
     model.save(MODEL_SAVE_PATH)
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     tflite_model = converter.convert()
-
     with open(TFLITE_SAVE_PATH, 'wb') as f:
         f.write(tflite_model)
-        
     with open('labels.txt', 'w') as f:
         for lbl in label_encoder.classes_:
             f.write(f"{lbl}\n")

@@ -3,7 +3,6 @@
 # ==================================
 # Bloquear ativamente todos os arquivos e pastas da pasta de Datasets...
 Treinamento IA/datasets/**
-!Treinamento IA/datasets/zip/** 
 # Pesos de IA e Matrizes 
 *.h5
 *.tflite
