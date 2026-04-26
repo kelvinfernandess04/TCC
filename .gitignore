@@ -2,7 +2,8 @@
 # IGNORAR ARQUIVOS PESADOS DA BASE
 # ==================================
 # Bloquear ativamente todos os arquivos e pastas da pasta de Datasets...
-Treinamento IA/datasets/**
+Treinamento IA/datasets/*
+!Treinamento IA/datasets/dataset_custom/
 # Pesos de IA e Matrizes 
 *.h5
 *.tflite
