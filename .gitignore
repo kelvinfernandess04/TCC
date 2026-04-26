@@ -5,8 +5,6 @@
 Treinamento IA/datasets/*
 !Treinamento IA/datasets/dataset_custom/
 # Pesos de IA e Matrizes 
-*.h5
-*.tflite
 *.pb
 *.npy
 

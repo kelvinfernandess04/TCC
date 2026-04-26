@@ -1,12 +1,9 @@
 import os
 import cv2
-import json
 import numpy as np
 import mediapipe as mp
 import tensorflow as tf
 import time
-from fastdtw import fastdtw
-from scipy.spatial.distance import euclidean
 
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 
@@ -14,12 +11,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRAIN_DIR = os.path.join(BASE_DIR, "Treinamento IA")
 H5_PATH = os.path.join(TRAIN_DIR, "modelo_gestos.h5")
 LABELS_PATH = os.path.join(TRAIN_DIR, "labels.txt")
-SANDBOX_JSON = os.path.join(BASE_DIR, "src", "sandbox_signatures.json")
 
 class DynamicSandbox:
     def __init__(self):
         print("="*50)
-        print(" LIBRAS DYNAMIC SANDBOX (DUAL-HAND) ")
+        print(" LIBRAS DYNAMIC SANDBOX (AI-POWERED) ")
         print("="*50)
 
         self.labels = []
@@ -43,31 +39,16 @@ class DynamicSandbox:
         )
 
         self.mode = "IDLE"
-        self.MAX_FRAMES = 90
+        self.MAX_FRAMES = 60 # 2 Segundos a 30fps
         self.recorded_frames = []
         
-        self.visual_path_left = []
-        self.visual_path_right = []
-        
         self.target_sign = ""
+        self.typed_text = ""
         self.result_score = 0.0
         self.result_message = ""
         self.report = {}
         
         self.countdown_start_time = 0
-        self.pending_mode = ""
-
-        self.signatures = self.load_signatures()
-        
-    def load_signatures(self):
-        if os.path.exists(SANDBOX_JSON):
-            with open(SANDBOX_JSON, 'r') as f:
-                return json.load(f)
-        return {}
-
-    def save_signatures(self):
-        with open(SANDBOX_JSON, 'w') as f:
-            json.dump(self.signatures, f, indent=2)
 
     def normalize_hand(self, hand_landmarks):
         pts = [[lm.x, lm.y] for lm in hand_landmarks.landmark]
@@ -83,95 +64,13 @@ class DynamicSandbox:
             ny = (y - min_y) / size
             normalized.append(nx)
             normalized.append(ny)
-        return normalized, pts
+        return normalized
 
-    def compare_single_hand(self, base_side, test_side):
-        base_shapes = [f["shape_prediction"] for f in base_side if f.get("relative_trajectory_x") is not None and f["shape_prediction"] != "NENHUM"]
-        
-        if not base_shapes:
-            return None # Não avalia essa mão pois ela não foi usada na base
-            
-        test_shapes = [f["shape_prediction"] for f in test_side if f.get("relative_trajectory_x") is not None and f["shape_prediction"] != "NENHUM"]
-        
-        def get_top_shapes(shapes):
-            counts = {}
-            for s in shapes: counts[s] = counts.get(s, 0) + 1
-            sorted_shapes = sorted(counts.items(), key=lambda item: item[1], reverse=True)
-            return [s[0] for s in sorted_shapes[:2]]
-            
-        base_top = get_top_shapes(base_shapes)
-        test_top = get_top_shapes(test_shapes)
-        
-        correct_confidences = []
-        for f in test_side:
-            if f["shape_prediction"] in base_top and f["shape_prediction"] != "NENHUM":
-                correct_confidences.append(f.get("confidence", 0.0))
-                
-        valid_test_frames = [f for f in test_side if f["shape_prediction"] != "NENHUM"]
-        shape_percentage = (len(correct_confidences) / len(valid_test_frames) * 100.0) if valid_test_frames else 0.0
-        shape_confidence = (sum(correct_confidences) / len(correct_confidences) * 100.0) if correct_confidences else 0.0
-        
-        base_traj = np.array([[f["relative_trajectory_x"], f["relative_trajectory_y"]] for f in base_side if f.get("relative_trajectory_x") is not None])
-        test_traj = np.array([[f["relative_trajectory_x"], f["relative_trajectory_y"]] for f in test_side if f.get("relative_trajectory_x") is not None])
-        
-        traj_score = 0.0
-        if len(base_traj) > 0 and len(test_traj) > 0:
-            distance, path = fastdtw(base_traj, test_traj, dist=euclidean)
-            norm_distance = distance / len(path)
-            traj_score = max(0.0, 100.0 * (1.0 - (norm_distance / 0.4)))
-            
-        final_score = (shape_percentage * 0.3) + (shape_confidence * 0.2) + (traj_score * 0.5)
-        
-        return {
-            "score": final_score,
-            "shape_perc": shape_percentage,
-            "shape_conf": shape_confidence,
-            "traj_score": traj_score,
-            "test_top": test_top
-        }
-
-    def compare_sequences(self, base_seq, test_seq):
-        base_left = [f["left"] for f in base_seq]
-        base_right = [f["right"] for f in base_seq]
-        
-        test_left = [f["left"] for f in test_seq]
-        test_right = [f["right"] for f in test_seq]
-        
-        res_left = self.compare_single_hand(base_left, test_left)
-        res_right = self.compare_single_hand(base_right, test_right)
-        
-        valid_hands = []
-        if res_left: valid_hands.append(res_left)
-        if res_right: valid_hands.append(res_right)
-        
-        if not valid_hands:
-            # Caso anomalo
-            return {
-                "final_score": 0.0, "traj_score": 0.0, "shape_percentage": 0.0, "shape_confidence": 0.0, "test_top": [], "hands_used": 0
-            }
-            
-        avg_final = sum(r["score"] for r in valid_hands) / len(valid_hands)
-        avg_traj = sum(r["traj_score"] for r in valid_hands) / len(valid_hands)
-        avg_shape_p = sum(r["shape_perc"] for r in valid_hands) / len(valid_hands)
-        avg_shape_c = sum(r["shape_conf"] for r in valid_hands) / len(valid_hands)
-        all_tops = []
-        for r in valid_hands: all_tops.extend(r["test_top"])
-        
-        return {
-            "final_score": avg_final,
-            "traj_score": avg_traj,
-            "shape_percentage": avg_shape_p,
-            "shape_confidence": avg_shape_c,
-            "test_top": list(set(all_tops)),
-            "hands_used": len(valid_hands)
-        }
-
-    def process_hand(self, landmarks, frame, w, h, body_mid_x, body_mid_y, connections):
+    def process_hand(self, landmarks, frame, w, h, connections):
         self.mp_draw.draw_landmarks(frame, landmarks, connections)
-        norm_coords, raw_pts = self.normalize_hand(landmarks)
+        norm_coords = self.normalize_hand(landmarks)
         
-        data = {"shape_prediction": "NENHUM", "confidence": 0.0, "relative_trajectory_x": None, "relative_trajectory_y": None}
-        wrist_px = (int(raw_pts[0][0] * w), int(raw_pts[0][1] * h))
+        data = {"shape_prediction": "NENHUM", "confidence": 0.0}
         
         if self.model:
             inp = np.array([norm_coords], dtype=np.float32)
@@ -181,11 +80,36 @@ class DynamicSandbox:
                 data["shape_prediction"] = self.labels[idx]
                 data["confidence"] = float(pred[idx])
                 
-        if body_mid_x is not None and body_mid_y is not None:
-            data["relative_trajectory_x"] = raw_pts[0][0] - body_mid_x
-            data["relative_trajectory_y"] = raw_pts[0][1] - body_mid_y
+        return data
+
+    def calculate_report(self):
+        matches = 0
+        confidences = []
+        for f in self.recorded_frames:
+            best_pred = "NENHUM"
+            best_conf = 0.0
             
-        return data, wrist_px
+            if f["left"]["confidence"] > f["right"]["confidence"]:
+                best_pred = f["left"]["shape_prediction"]
+                best_conf = f["left"]["confidence"]
+            else:
+                best_pred = f["right"]["shape_prediction"]
+                best_conf = f["right"]["confidence"]
+                
+            if best_pred == self.target_sign:
+                matches += 1
+                confidences.append(best_conf)
+                
+        match_rate = (matches / len(self.recorded_frames)) * 100.0 if self.recorded_frames else 0.0
+        avg_conf = (sum(confidences) / len(confidences)) * 100.0 if confidences else 0.0
+        
+        final_score = (match_rate * 0.5) + (avg_conf * 0.5)
+        
+        return {
+            "match_rate": match_rate,
+            "avg_conf": avg_conf,
+            "final_score": final_score
+        }
 
     def run(self):
         cap = cv2.VideoCapture(0)
@@ -201,139 +125,102 @@ class DynamicSandbox:
             results = self.holistic.process(image_rgb)
             
             frame_data = {
-                "left": {"shape_prediction": "NENHUM", "confidence": 0.0, "relative_trajectory_x": None, "relative_trajectory_y": None},
-                "right": {"shape_prediction": "NENHUM", "confidence": 0.0, "relative_trajectory_x": None, "relative_trajectory_y": None}
+                "left": {"shape_prediction": "NENHUM", "confidence": 0.0},
+                "right": {"shape_prediction": "NENHUM", "confidence": 0.0}
             }
-            wrist_left_px = None
-            wrist_right_px = None
             
-            body_mid_x, body_mid_y = None, None
-            if results.pose_landmarks:
-                l_shoulder = results.pose_landmarks.landmark[11]
-                r_shoulder = results.pose_landmarks.landmark[12]
-                body_mid_x = (l_shoulder.x + r_shoulder.x) / 2.0
-                body_mid_y = (l_shoulder.y + r_shoulder.y) / 2.0
-                # Pose removida visualmente para não gerar pontos fantasmas sobre a mão
-                
             if results.left_hand_landmarks:
-                frame_data["left"], wrist_left_px = self.process_hand(
-                    results.left_hand_landmarks, frame, w, h, body_mid_x, body_mid_y, self.mp_holistic.HAND_CONNECTIONS)
+                frame_data["left"] = self.process_hand(
+                    results.left_hand_landmarks, frame, w, h, self.mp_holistic.HAND_CONNECTIONS)
             if results.right_hand_landmarks:
-                frame_data["right"], wrist_right_px = self.process_hand(
-                    results.right_hand_landmarks, frame, w, h, body_mid_x, body_mid_y, self.mp_holistic.HAND_CONNECTIONS)
+                frame_data["right"] = self.process_hand(
+                    results.right_hand_landmarks, frame, w, h, self.mp_holistic.HAND_CONNECTIONS)
             
-            # --- LÓGICA DE ESTADOS ---
             if self.mode == "COUNTDOWN":
                 elapsed = time.time() - self.countdown_start_time
                 remaining = 3.0 - elapsed
                 if remaining <= 0:
-                    self.mode = self.pending_mode
+                    self.mode = "RECORD_TEST"
                     self.recorded_frames = []
-                    self.visual_path_left = []
-                    self.visual_path_right = []
                     self.result_score = 0.0
-            elif self.mode in ["RECORD_BASE", "RECORD_TEST"]:
+            elif self.mode == "RECORD_TEST":
                 self.recorded_frames.append(frame_data)
-                
-                if wrist_left_px: self.visual_path_left.append(wrist_left_px)
-                if wrist_right_px: self.visual_path_right.append(wrist_right_px)
-                    
                 if len(self.recorded_frames) >= self.MAX_FRAMES:
-                    if self.mode == "RECORD_BASE":
-                        self.signatures[self.target_sign] = {"total_frames": self.MAX_FRAMES, "sequence": self.recorded_frames}
-                        self.save_signatures()
-                        self.result_message = f"BASE '{self.target_sign}' SALVA!"
-                        self.mode = "RESULT"
-                    elif self.mode == "RECORD_TEST":
-                        base_seq = self.signatures.get(self.target_sign, {}).get("sequence", [])
-                        if base_seq:
-                            report = self.compare_sequences(base_seq, self.recorded_frames)
-                            self.result_score = report["final_score"]
-                            self.report = report
-                            self.result_message = f"APROVADO!" if self.result_score >= 70.0 else "REPROVADO!"
-                        else:
-                            self.result_message = "BASE NÃO ENCONTRADA!"
-                        self.mode = "RESULT"
+                    report = self.calculate_report()
+                    self.result_score = report["final_score"]
+                    self.report = report
+                    self.result_message = "APROVADO!" if self.result_score >= 70.0 else "REPROVADO!"
+                    self.mode = "RESULT"
                         
-            # --- DESENHOS ---
-            if len(self.visual_path_left) > 1:
-                cv2.polylines(frame, [np.array(self.visual_path_left)], False, (255, 0, 0), 4) # Azul pra Esquerda
-            if len(self.visual_path_right) > 1:
-                cv2.polylines(frame, [np.array(self.visual_path_right)], False, (0, 0, 255), 4) # Vermelho pra Direita
-                
             if self.mode == "COUNTDOWN":
                 elapsed = time.time() - self.countdown_start_time
                 remaining = int(3.0 - elapsed) + 1
                 cv2.putText(frame, f"{remaining}", (w//2 - 40, h//2 + 40), cv2.FONT_HERSHEY_DUPLEX, 5.0, (0, 255, 255), 10)
             
-            if self.mode != "RESULT":
-                cv2.rectangle(frame, (0, 0), (350, 150), (20, 20, 20), -1)
-                cv2.putText(frame, "DYNAMIC SANDBOX", (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 1)
+            if self.mode != "RESULT" and self.mode != "TYPING":
+                cv2.rectangle(frame, (0, 0), (350, 180), (20, 20, 20), -1)
+                cv2.putText(frame, "DYNAMIC SANDBOX (AI POWERED)", (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
+                
+                cv2.putText(frame, "REAL-TIME AI:", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                cv2.putText(frame, f"Esq: {frame_data['left']['shape_prediction']} ({frame_data['left']['confidence']*100:.0f}%)", (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 150, 0), 1)
+                cv2.putText(frame, f"Dir: {frame_data['right']['shape_prediction']} ({frame_data['right']['confidence']*100:.0f}%)", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 150, 255), 1)
                 
                 if self.mode == "IDLE":
-                    cv2.putText(frame, "[B] Gravar Nova Base", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                    cv2.putText(frame, "[T] Testar Sinal", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 1)
-                    cv2.putText(frame, f"Bases: {len(self.signatures)} cadastradas", (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                    cv2.putText(frame, "[T] Iniciar Teste", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
-                elif self.mode in ["RECORD_BASE", "RECORD_TEST"]:
-                    cv2.putText(frame, f"GRAVANDO: {self.target_sign}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                elif self.mode == "RECORD_TEST":
+                    cv2.putText(frame, f"GRAVANDO: {self.target_sign}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     prog = int((len(self.recorded_frames) / self.MAX_FRAMES) * 330)
-                    cv2.rectangle(frame, (10, 100), (340, 120), (50, 50, 50), -1)
-                    cv2.rectangle(frame, (10, 100), (10 + prog, 120), (0, 0, 255), -1)
+                    cv2.rectangle(frame, (10, 160), (340, 175), (50, 50, 50), -1)
+                    cv2.rectangle(frame, (10, 160), (10 + prog, 175), (0, 0, 255), -1)
+            
+            elif self.mode == "TYPING":
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+                cv2.putText(frame, "QUAL SINAL VOCE VAI TESTAR?", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+                cv2.putText(frame, f"> {self.typed_text}_", (50, 180), cv2.FONT_HERSHEY_DUPLEX, 2.0, (0, 255, 255), 3)
+                cv2.putText(frame, "Digite a letra e aperte [ENTER]", (50, h - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
                 
             elif self.mode == "RESULT":
-                cv2.rectangle(frame, (0, 0), (520, 290), (30, 30, 30), -1)
+                cv2.rectangle(frame, (0, 0), (550, 250), (30, 30, 30), -1)
                 cv2.putText(frame, f"ALVO: {self.target_sign}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
                 
                 color = (0, 255, 0) if "APROVADO" in self.result_message else (0, 0, 255)
-                if "BASE SALVA" in self.result_message: color = (255, 255, 0)
-                
                 cv2.putText(frame, self.result_message, (10, 70), cv2.FONT_HERSHEY_DUPLEX, 1.2, color, 2)
                 
-                if "BASE SALVA" not in self.result_message and self.report:
+                if self.report:
                     y = 110
-                    hands_text = f"Sim (Duas Maos)" if self.report.get('hands_used') == 2 else f"Apenas Uma"
-                    cv2.putText(frame, f"> Maos detectadas na validacao: {hands_text}", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 255), 1); y+=25
-                    cv2.putText(frame, f"1. Similitude da Trajetoria (Corpo): {self.report['traj_score']:.1f}%", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1); y+=25
-                    cv2.putText(frame, f"2. Assertividade da Forma (Tempo):  {self.report['shape_percentage']:.1f}%", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1); y+=25
-                    cv2.putText(frame, f"3. Certeza Interna do Modelo IA:    {self.report['shape_confidence']:.1f}%", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1); y+=25
-                    cv2.putText(frame, f"Identificados: [{', '.join(self.report['test_top'])}]", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1); y+=35
+                    cv2.putText(frame, f"1. Precisao Temporal (Acertos nos 60 frames): {self.report['match_rate']:.1f}%", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1); y+=25
+                    cv2.putText(frame, f"2. Confianca Media da Inteligencia Artificial:  {self.report['avg_conf']:.1f}%", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1); y+=40
                     
-                    cv2.putText(frame, f"NOTA FINAL: {self.report['final_score']:.1f}%", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+                    cv2.putText(frame, f"NOTA FINAL DE SIMILARIDADE: {self.report['final_score']:.1f}%", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                     
-                cv2.putText(frame, "Pressione [Espaco] para fechar", (10, 275), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                cv2.putText(frame, "Pressione [Espaco] para fechar", (10, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
             
             cv2.imshow('Sandbox Dinamico', frame)
             
             key = cv2.waitKey(1) & 0xFF
             if key == 27:
                 break
-            elif key == ord('b') and self.mode == "IDLE":
-                nome = input("Digite o nome do Sinal para gravar a BASE: ").strip().upper()
-                if nome:
-                    self.target_sign = nome
-                    self.pending_mode = "RECORD_BASE"
-                    self.countdown_start_time = time.time()
-                    self.mode = "COUNTDOWN"
-                    print(f"GRAVANDO BASE EM 3, 2, 1... PREPARE-SE!")
-            elif key == ord('t') and self.mode == "IDLE":
-                if not self.signatures:
-                    print("Nenhuma base cadastrada. Aperte B primeiro.")
-                else:
-                    print("Bases cadastradas:", ", ".join(self.signatures.keys()))
-                    nome = input("Digite qual Sinal você quer TESTAR: ").strip().upper()
-                    if nome in self.signatures:
-                        self.target_sign = nome
-                        self.pending_mode = "RECORD_TEST"
+            
+            if self.mode == "TYPING":
+                if key == 13: # ENTER
+                    if self.typed_text:
+                        self.target_sign = self.typed_text.upper()
                         self.countdown_start_time = time.time()
                         self.mode = "COUNTDOWN"
-                        print(f"TESTANDO SINAL EM 3, 2, 1... PREPARE-SE!")
-                    else:
-                        print("Sinal não encontrado.")
-            elif key == 32 and self.mode == "RESULT":
+                elif key == 8: # BACKSPACE
+                    self.typed_text = self.typed_text[:-1]
+                elif 32 <= key <= 126:
+                    self.typed_text += chr(key).upper()
+                    
+            elif self.mode == "IDLE" and key == ord('t'):
+                self.mode = "TYPING"
+                self.typed_text = ""
+                
+            elif self.mode == "RESULT" and key == 32:
                 self.mode = "IDLE"
-                self.visual_path_left = []
-                self.visual_path_right = []
 
         cap.release()
         cv2.destroyAllWindows()

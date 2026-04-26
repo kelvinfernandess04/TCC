@@ -181,6 +181,7 @@ def run_extraction():
             save_cache(cache)
             
     print("\n[EXTRACTOR] Extração biológica concluída em múltiplos núcleos e cacheada!")
+    return cache, pending_jobs, start_time
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
