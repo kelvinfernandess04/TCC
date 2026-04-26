@@ -1,10 +1,13 @@
 import os
 import base64
 
-TFLITE_PATH = r"C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA\modelo_gestos.tflite"
-LABELS_PATH = r"C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA\labels.txt"
-JS_MODEL_OUT = r"C:\DevTools\Repositories\Faculdade\TCC\POC\modelBase64.js"
-JS_LABELS_OUT = r"C:\DevTools\Repositories\Faculdade\TCC\POC\labels.js"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Treinamento IA root
+PROJECT_ROOT = os.path.dirname(BASE_DIR) # TCC root
+
+TFLITE_PATH = os.path.join(BASE_DIR, "models", "modelo_gestos.tflite")
+LABELS_PATH = os.path.join(BASE_DIR, "models", "labels.txt")
+JS_MODEL_OUT = os.path.join(PROJECT_ROOT, "POC", "modelBase64.js")
+JS_LABELS_OUT = os.path.join(PROJECT_ROOT, "POC", "labels.js")
 
 def update_poc_files():
     # 1. Update Base64 Model

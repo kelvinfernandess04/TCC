@@ -16,9 +16,10 @@ sys.modules['tensorflow.tools.docs'] = MagicMock()
 import mediapipe as mp
 
 # Paths
-DATASETS_DIR = r"C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA\datasets"
-UNIFIED_JSON_DIR = r"C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA\unified_cache"
-CACHE_FILE = r"C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA\extraction_cache.json"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Treinamento IA root
+DATASETS_DIR = os.path.join(BASE_DIR, "data", "datasets")
+UNIFIED_JSON_DIR = os.path.join(BASE_DIR, "data", "unified_cache")
+CACHE_FILE = os.path.join(BASE_DIR, "data", "extraction_cache.json")
 
 ALLOWED_LABELS = ['A', 'B', 'C', 'D', 'E', 'I', 'L', 'O', 'P', 'S', 'U', 'V', 'W', 'X', 'Y']
 
@@ -190,7 +191,7 @@ if __name__ == "__main__":
     # Relatório final de extração
     # ---------------------------
     import json, os, time
-    report_path = os.path.join(os.path.dirname(__file__), "extraction_report.json")
+    report_path = os.path.join(BASE_DIR, "reports", "extraction_report.json")
     # Agrega estatísticas por dataset
     dataset_stats = {}
     total_success = total_nohand = total_ignored = total_error = 0

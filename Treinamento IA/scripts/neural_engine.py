@@ -8,10 +8,12 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
-MODEL_SAVE_PATH = 'modelo_gestos.h5'
-TFLITE_SAVE_PATH = 'modelo_gestos.tflite'
-CACHE_FILE = 'extraction_cache.json'
-CUSTOM_JSON_DIR = os.path.join('datasets', 'dataset_custom')
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Treinamento IA root
+MODEL_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'modelo_gestos.h5')
+TFLITE_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'modelo_gestos.tflite')
+LABELS_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'labels.txt')
+CACHE_FILE = os.path.join(BASE_DIR, 'data', 'extraction_cache.json')
+CUSTOM_JSON_DIR = os.path.join(BASE_DIR, 'data', 'datasets', 'dataset_custom')
 
 ALLOWED_LABELS = ['A', 'B', 'C', 'D', 'E', 'I', 'L', 'O', 'P', 'S', 'U', 'V', 'W', 'X', 'Y']
 
@@ -163,7 +165,7 @@ def run_neural_engine():
     elapsed_train = time.time() - start_train
     mins, secs = divmod(int(elapsed_train), 60)
     # Relatório resumido
-    training_report_path = os.path.join(os.path.dirname(__file__), "training_report.json")
+    training_report_path = os.path.join(BASE_DIR, "reports", "training_report.json")
     training_summary = {
         "total_original_samples": len(X),
         "total_augmented_samples": len(augmented_X),
@@ -187,7 +189,7 @@ def run_neural_engine():
     tflite_model = converter.convert()
     with open(TFLITE_SAVE_PATH, 'wb') as f:
         f.write(tflite_model)
-    with open('labels.txt', 'w') as f:
+    with open(LABELS_SAVE_PATH, 'w') as f:
         for lbl in label_encoder.classes_:
             f.write(f"{lbl}\n")
 
