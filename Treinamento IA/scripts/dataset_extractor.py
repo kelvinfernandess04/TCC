@@ -1,8 +1,13 @@
 import os
+import sys
+
+# Suprime logs C++ excessivos do TensorFlow e MediaPipe (Evita spam no console)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['GLOG_minloglevel'] = '2'
+
 import cv2
 import json
 import glob
-import sys
 import time
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -39,10 +44,19 @@ def get_class_from_path(file_path):
     return os.path.basename(os.path.dirname(file_path)).strip().upper()
 
 def process_chunk(chunk_jobs, allowed_labels, datasets_dir):
+    import os
+    import sys
+    
+    # [HACK] Redireciona o stderr (nível do SO) para silenciar completamente os warnings C++ (absl) do MediaPipe
+    try:
+        sys.stderr.flush()
+        null_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null_fd, 2)
+    except: pass
+
     import numpy as np
     import cv2
     import mediapipe as mp
-    import os
     
     mp_holistic = mp.solutions.holistic
     local_cache = {}
@@ -161,9 +175,10 @@ def run_extraction():
     start_time = time.time()
     total_processed = 0
     
-    with ProcessPoolExecutor(max_workers=cores) as executor:
-        futures = [executor.submit(process_chunk, chunk, ALLOWED_LABELS, DATASETS_DIR) for chunk in chunks]
-        
+    executor = ProcessPoolExecutor(max_workers=cores)
+    futures = [executor.submit(process_chunk, chunk, ALLOWED_LABELS, DATASETS_DIR) for chunk in chunks]
+    
+    try:
         for future in as_completed(futures):
             try:
                 chunk_result = future.result()
@@ -181,7 +196,16 @@ def run_extraction():
             
             save_cache(cache)
             
+    except KeyboardInterrupt:
+        print("\n[EXTRACTOR] Interrompido pelo usuário (Ctrl+C). Cancelando e fechando workers...")
+        for f in futures:
+            f.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        # Força saída imediata para não pendurar o terminal no Windows
+        os._exit(1)
+            
     print("\n[EXTRACTOR] Extração biológica concluída em múltiplos núcleos e cacheada!")
+    executor.shutdown(wait=True)
     return cache, pending_jobs, start_time
 
 if __name__ == "__main__":

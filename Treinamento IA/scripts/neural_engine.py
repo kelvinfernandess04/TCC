@@ -160,8 +160,18 @@ def run_neural_engine():
     # early stopping callback to avoid overfitting
     early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
     start_train = time.time()
+    # Otimização do Pipeline com tf.data (Batch 128 + Prefetch)
+    BATCH_SIZE = 128
+    AUTOTUNE = tf.data.AUTOTUNE
+    
+    train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+    train_dataset = train_dataset.shuffle(buffer_size=len(X_train)).batch(BATCH_SIZE).prefetch(AUTOTUNE)
+    
+    val_dataset = tf.data.Dataset.from_tensor_slices((X_test, y_test))
+    val_dataset = val_dataset.batch(BATCH_SIZE).prefetch(AUTOTUNE)
+
     # Fit retorna History
-    history = model.fit(X_train, y_train, epochs=150, batch_size=64, validation_data=(X_test, y_test), callbacks=[early_stopping])
+    history = model.fit(train_dataset, epochs=150, validation_data=val_dataset, callbacks=[early_stopping])
     elapsed_train = time.time() - start_train
     mins, secs = divmod(int(elapsed_train), 60)
     # Relatório resumido
