@@ -2,8 +2,8 @@
 # IGNORAR ARQUIVOS PESADOS DA BASE
 # ==================================
 # Bloquear ativamente todos os arquivos e pastas da pasta de Datasets...
-Treinamento IA/datasets/*
-!Treinamento IA/datasets/dataset_custom/
+Treinamento IA/data/datasets/*
+!Treinamento IA/data/datasets/dataset_custom/
 # Pesos de IA e Matrizes 
 *.pb
 *.npy
@@ -33,7 +33,7 @@ package-lock.json
 # ==================================
 # ARTEFATOS REMANESCENTES DO SISTEMA
 # ==================================
-data/
+/data/
 results/
 .DS_Store
 Thumbs.db
