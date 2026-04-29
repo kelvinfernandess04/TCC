@@ -1,9 +1,12 @@
 # ==================================
 # IGNORAR ARQUIVOS PESADOS DA BASE
 # ==================================
-# Bloquear ativamente todos os arquivos e pastas da pasta de Datasets...
+# Bloquear ativamente todos os arquivos e pastas da pasta de Datasets,
+# permitindo apenas o dataset_custom e mantendo a pasta zips disponível.
 Treinamento IA/data/datasets/*
 !Treinamento IA/data/datasets/dataset_custom/
+!Treinamento IA/data/datasets/dataset_custom/**
+Treinamento IA/datasets/
 # Pesos de IA e Matrizes 
 *.pb
 *.npy
