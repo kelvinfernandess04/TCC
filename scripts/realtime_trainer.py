@@ -46,12 +46,13 @@ class AILiveCaptureTool:
         else:
             print("[AVISO] Modelo H5 não encontrado em 'Treinamento IA/'.")
             
-        # 3. Inicializar MediaPipe
-        self.mp_hands = mp.solutions.hands
+        # 3. Inicializar MediaPipe Holistic
+        self.mp_holistic = mp.solutions.holistic
         self.mp_draw = mp.solutions.drawing_utils
-        self.hands = self.mp_hands.Hands(
+        self.holistic = self.mp_holistic.Holistic(
             static_image_mode=False,
-            max_num_hands=1,
+            model_complexity=1,
+            smooth_landmarks=True,
             min_detection_confidence=0.7,
             min_tracking_confidence=0.5
         )
@@ -169,38 +170,39 @@ class AILiveCaptureTool:
             success, image = cap.read()
             if not success: break
             
-            # Processar imagem RAW para a IA (mesmo referencial da POC WebView)
-            # O flip é apenas visual para o feedback do usuário
-            raw_image = image.copy()
-            display_img = cv2.flip(image, 1) # Mirror apenas para display
+            # 1. Flip do frame ANTES do processamento (Alinha visual com a física)
+            display_img = cv2.flip(image, 1)
             
-            # 1. Processamento Landmarks Hands (sobre imagem RAW, sem flip)
-            res = self.hands.process(cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB))
+            # Processamento Landmarks Holistic
+            res = self.holistic.process(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
             
-            if res.multi_hand_landmarks:
-                for hand_lms in res.multi_hand_landmarks:
-                    self.mp_draw.draw_landmarks(display_img, hand_lms, self.mp_hands.HAND_CONNECTIONS)
+            # Tenta pegar qualquer mão detectada
+            hand_lms = res.right_hand_landmarks or res.left_hand_landmarks
+            
+            if hand_lms:
+                # Desenhar esqueleto (Pontos e Linhas)
+                self.mp_draw.draw_landmarks(display_img, hand_lms, self.mp_holistic.HAND_CONNECTIONS)
+                
+                # Normalizar e extrair pontos
+                norm_42, raw_pts = self.normalize_for_ai(hand_lms)
                     
-                    # Normalizar e extrair pontos
-                    norm_42, raw_pts = self.normalize_for_ai(hand_lms)
-                    
-                    # 2. IA Prediz se tiver modelo carregado
-                    if self.model:
-                        inp = np.array([norm_42], dtype=np.float32)
-                        pred = self.model.predict(inp, verbose=0)[0]
-                        idx = np.argmax(pred)
-                        self.current_match = self.labels[idx] if idx < len(self.labels) else "???"
-                        self.current_confidence = pred[idx]
-                    
-                    # 3. Se estiver gravando, salva os pontos crus
-                    if self.recording_mode:
-                        self.current_session_frames.append(raw_pts)
-                        if len(self.current_session_frames) >= self.recording_max_frames:
-                            self.recording_mode = False
-                            # Pequena pausa visual antes do input do terminal
-                            cv2.imshow('Libras Trainer', display_img)
-                            cv2.waitKey(100)
-                            self.save_session_to_catalog()
+                # 2. IA Prediz se tiver modelo carregado
+                if self.model:
+                    inp = np.array([norm_42], dtype=np.float32)
+                    pred = self.model.predict(inp, verbose=0)[0]
+                    idx = np.argmax(pred)
+                    self.current_match = self.labels[idx] if idx < len(self.labels) else "???"
+                    self.current_confidence = pred[idx]
+                
+                # 3. Se estiver gravando, salva os pontos crus
+                if self.recording_mode:
+                    self.current_session_frames.append(raw_pts)
+                    if len(self.current_session_frames) >= self.recording_max_frames:
+                        self.recording_mode = False
+                        # Pequena pausa visual antes do input do terminal
+                        cv2.imshow('Libras Trainer', display_img)
+                        cv2.waitKey(100)
+                        self.save_session_to_catalog()
             else:
                 self.current_match = "IDLE"
                 self.current_confidence = 0.0

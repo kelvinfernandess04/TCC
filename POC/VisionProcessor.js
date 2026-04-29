@@ -25,14 +25,13 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
                 transform: ${facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)'};
             }
         </style>
-        <!-- TensorFlow.js Core & WebGL backend -->
+        <!-- TensorFlow.js Core & TFLite -->
         <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
         <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
-        <!-- TensorFlow.js TFLite backend -->
         <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.9/dist/tf-tflite.min.js"></script>
-        <!-- MediaPipe dependencies -->
-        <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection"></script>
-        <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+        
+        <!-- MediaPipe Holistic -->
+        <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js"></script>
     </head>
     <body>
         <video id="video" autoplay playsinline muted></video>
@@ -42,12 +41,20 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
             
-            let detector;
+            let holistic;
             let tfliteModel;
             const classLabels = ${JSON.stringify(labels)};
             let lastInferenceTime = Date.now();
+
+            const HAND_CONNECTIONS = [
+                [0,1],[1,2],[2,3],[3,4],
+                [0,5],[5,6],[6,7],[7,8],
+                [5,9],[9,10],[10,11],[11,12],
+                [9,13],[13,14],[14,15],[15,16],
+                [13,17],[17,18],[18,19],[19,20],
+                [0,17]
+            ];
             
-            // Utility: Convert Base64 string back into ArrayBuffer for TFLite
             function base64ToArrayBuffer(base64) {
                 var binary_string = window.atob(base64);
                 var len = binary_string.length;
@@ -60,7 +67,6 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
 
             async function init() {
                 try {
-                    // Send loading status
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Acessando câmera...' }));
                     
                     const stream = await navigator.mediaDevices.getUserMedia({
@@ -79,138 +85,124 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
 
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Carregando Modelos de IA...' }));
 
-                    // Initialize TFLite WebAssembly runtime
-                    // tf-tflite requires Wasm binaries, we load them via CDN
                     tflite.setWasmPath('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.9/dist/');
-                    
                     const modelBuffer = base64ToArrayBuffer("${modelBase64}");
                     tfliteModel = await tflite.loadTFLiteModel(modelBuffer);
 
-                    // Initialize MediaPipe Hand Pose
-                    const model = handPoseDetection.SupportedModels.MediaPipeHands;
-                    const detectorConfig = {
-                      runtime: 'mediapipe',
-                      solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/hands'
-                    };
-                    detector = await handPoseDetection.createDetector(model, detectorConfig);
+                    holistic = new Holistic({locateFile: (file) => {
+                        return "https://cdn.jsdelivr.net/npm/@mediapipe/holistic/" + file;
+                    }});
 
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Modelos Prontos. Iniciando...' }));
-                    predictLoop();
+                    holistic.setOptions({
+                        modelComplexity: 1,
+                        smoothLandmarks: true,
+                        minDetectionConfidence: 0.5,
+                        minTrackingConfidence: 0.5
+                    });
+
+                    holistic.onResults(onResults);
+
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Modelos Prontos.' }));
+                    
+                    async function processVideo() {
+                        await holistic.send({image: video});
+                        requestAnimationFrame(processVideo);
+                    }
+                    processVideo();
 
                 } catch(e) {
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error', message: e.message }));
                 }
             }
 
-            // Centralized Normalization mimicking Python logic (Bounding Box Min-Max)
-            function normalizeLandmarks(keypoints) {
+            function normalizeLandmarks(landmarks) {
                 let minX = Infinity, maxX = -Infinity;
                 let minY = Infinity, maxY = -Infinity;
                 
-                // Find boundaries
                 for (let i = 0; i < 21; i++) {
-                    minX = Math.min(minX, keypoints[i].x);
-                    maxX = Math.max(maxX, keypoints[i].x);
-                    minY = Math.min(minY, keypoints[i].y);
-                    maxY = Math.max(maxY, keypoints[i].y);
+                    minX = Math.min(minX, landmarks[i].x);
+                    maxX = Math.max(maxX, landmarks[i].x);
+                    minY = Math.min(minY, landmarks[i].y);
+                    maxY = Math.max(maxY, landmarks[i].y);
                 }
                 
                 const width = Math.max(maxX - minX, 1e-6);
                 const height = Math.max(maxY - minY, 1e-6);
                 const size = Math.max(width, height);
                 
-                const normKeypoints = [];
+                const norm = [];
                 for (let i = 0; i < 21; i++) {
-                    const nx = (keypoints[i].x - minX) / size;
-                    const ny = (keypoints[i].y - minY) / size;
-                    normKeypoints.push(nx, ny);
+                    norm.push((landmarks[i].x - minX) / size);
+                    norm.push((landmarks[i].y - minY) / size);
                 }
-                
-                return normKeypoints;
+                return norm;
             }
 
-            function drawPoints(keypoints) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = '#00FF00';
-                for (let i = 0; i < keypoints.length; i++) {
+            function drawHand(landmarks) {
+                // Desenhar conexões
+                ctx.strokeStyle = '#00FF00';
+                ctx.lineWidth = 3;
+                for (const [start, end] of HAND_CONNECTIONS) {
                     ctx.beginPath();
-                    ctx.arc(keypoints[i].x, keypoints[i].y, 4, 0, 2 * Math.PI);
+                    ctx.moveTo(landmarks[start].x * canvas.width, landmarks[start].y * canvas.height);
+                    ctx.lineTo(landmarks[end].x * canvas.width, landmarks[end].y * canvas.height);
+                    ctx.stroke();
+                }
+
+                // Desenhar pontos
+                ctx.fillStyle = '#FFFFFF';
+                for (let i = 0; i < landmarks.length; i++) {
+                    ctx.beginPath();
+                    ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI);
                     ctx.fill();
                 }
             }
 
-            async function predictLoop() {
-                try {
-                    if (detector && tfliteModel) {
-                        const hands = await detector.estimateHands(video, {flipHorizontal: false});
-                        
-                        if (hands.length > 0) {
-                            const keypoints = hands[0].keypoints;
-                            drawPoints(keypoints);
-                            
-                            if (keypoints.length === 21) {
-                                const flatArr = normalizeLandmarks(keypoints);
-                                
-                                // Inference
-                                const inputTensor = tf.tensor2d(flatArr, [1, flatArr.length], 'float32');
-                                const output = tfliteModel.predict(inputTensor);
-                                
-                                // tflite.predict can return an array, object or tensor depending on the model
-                                const outputTensor = output instanceof tf.Tensor 
-                                    ? output 
-                                    : (Array.isArray(output) ? output[0] : Object.values(output)[0]);
-                                
-                                const outputData = outputTensor.dataSync();
-                                // Find highest probability class
-                                let maxProb = 0;
-                                let maxIndex = 0;
-                                outputData.forEach((prob, idx) => {
-                                    if (prob > maxProb) {
-                                        maxProb = prob;
-                                        maxIndex = idx;
-                                    }
-                                });
-                                
-                                // To avoid spamming React Native bridge, send updates at most 15 times a second
-                                const now = Date.now();
-                                if (now - lastInferenceTime > 66) {
-                                    window.ReactNativeWebView.postMessage(JSON.stringify({
-                                        type: 'prediction',
-                                        classIndex: maxIndex,
-                                        label: classLabels[maxIndex],
-                                        confidence: maxProb,
-                                        inferenceTimeMs: now - lastInferenceTime
-                                    }));
-                                    lastInferenceTime = now;
-                                }
-                                
-                                inputTensor.dispose();
-                                if (output instanceof tf.Tensor) {
-                                    output.dispose();
-                                } else if (Array.isArray(output)) {
-                                    output.forEach(t => t.dispose());
-                                } else {
-                                    Object.values(output).forEach(t => t.dispose());
-                                }
-                            }
-                        } else {
-                            ctx.clearRect(0, 0, canvas.width, canvas.height);
-                            const now = Date.now();
-                            if (now - lastInferenceTime > 200) {
-                                window.ReactNativeWebView.postMessage(JSON.stringify({
-                                    type: 'prediction',
-                                    label: 'Nenhuma mão detectada',
-                                    confidence: 0
-                                }));
-                                lastInferenceTime = now;
-                            }
-                        }
-                    }
-                } catch(e) {
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error', message: 'Draw/Predict falhou: ' + e.message }));
-                }
+            async function onResults(results) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
                 
-                requestAnimationFrame(predictLoop);
+                const handLandmarks = results.rightHandLandmarks || results.leftHandLandmarks;
+                
+                if (handLandmarks) {
+                    drawHand(handLandmarks);
+                    
+                    if (tfliteModel) {
+                        const flatArr = normalizeLandmarks(handLandmarks);
+                        const inputTensor = tf.tensor2d(flatArr, [1, 42], 'float32');
+                        const output = tfliteModel.predict(inputTensor);
+                        
+                        const outputTensor = output instanceof tf.Tensor ? output : output[0];
+                        const outputData = outputTensor.dataSync();
+                        
+                        let maxProb = 0, maxIndex = 0;
+                        outputData.forEach((prob, idx) => {
+                            if (prob > maxProb) { maxProb = prob; maxIndex = idx; }
+                        });
+
+                        const now = Date.now();
+                        if (now - lastInferenceTime > 100) {
+                            window.ReactNativeWebView.postMessage(JSON.stringify({
+                                type: 'prediction',
+                                label: classLabels[maxIndex],
+                                confidence: maxProb
+                            }));
+                            lastInferenceTime = now;
+                        }
+                        
+                        inputTensor.dispose();
+                        if (output instanceof tf.Tensor) output.dispose();
+                    }
+                } else {
+                    const now = Date.now();
+                    if (now - lastInferenceTime > 300) {
+                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                            type: 'prediction',
+                            label: 'Aguardando mão...',
+                            confidence: 0
+                        }));
+                        lastInferenceTime = now;
+                    }
+                }
             }
 
             init();

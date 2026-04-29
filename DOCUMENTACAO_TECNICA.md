@@ -90,18 +90,35 @@ A POC é uma aplicação mobile desenvolvida para demonstrar a portabilidade do 
 - **Runtime de IA**: Utiliza uma `WebView` para rodar o motor de inferência em JavaScript de alta performance.
 - **Bibliotecas**:
     - `@tensorflow/tfjs-tflite`: Permite rodar o modelo `.tflite` diretamente no navegador/WebView.
-    - `@tensorflow-models/hand-pose-detection`: Implementação do MediaPipe para ambiente web.
+    - `@mediapipe/holistic`: Implementação completa do MediaPipe para ambiente web.
 
 ### 5.2 Lógica de Funcionamento (`VisionProcessor.js`)
 1.  **Captura**: A WebView acessa a câmera do celular via `navigator.mediaDevices.getUserMedia`.
-2.  **Processamento**: O esqueleto da mão é extraído pelo MediaPipe Hands.
+2.  **Processamento (Holistic)**: O esqueleto da mão e do corpo é extraído pelo MediaPipe Holistic.
 3.  **Inferência**: Os pontos são normalizados (usando a mesma lógica de Bounding Box do Python) e enviados para o modelo TFLite injetado via Base64.
-4.  **Ponte de Comunicação (Bridge)**: O resultado da predição (Letra e Confiança) é enviado da WebView para o código nativo (React Native) através de `window.ReactNativeWebView.postMessage`.
-5.  **Interface**: O React Native recebe esses dados e renderiza os feedbacks visuais de forma fluida.
+4.  **Interface Visual**: O sistema renderiza no canvas um esqueleto completo (pontos e conexões), proporcionando um feedback visual preciso e alinhado com a mão do usuário.
+5.  **Ponte de Comunicação (Bridge)**: O resultado da predição é enviado para o código nativo através de `window.ReactNativeWebView.postMessage`.
 
 ---
 
-## 6. Como Reproduzir os Scripts
+## 6. Unificação e Estética do Sistema
+
+O projeto foi totalmente unificado sob o modelo **MediaPipe Holistic** para garantir que o treinamento seja 100% compatível com a execução em tempo real.
+
+### 6.1 Correção de Espelhamento
+Nas ferramentas de interface (`realtime_trainer.py` e `dynamic_sandbox.py`), o frame da câmera é invertido **antes** do processamento da IA. Isso garante que:
+- Os pontos desenhados fiquem perfeitamente "colados" na mão do usuário.
+- O dado processado pela IA seja idêntico ao que o usuário vê na tela (Mirror Mode).
+
+### 6.2 Visual "Premium" (Esqueleto)
+Seguindo o padrão do Sandbox, o Trainer e a POC Mobile agora exibem o esqueleto completo:
+- **Pontos Brancos**: Representam as juntas dos dedos.
+- **Linhas Verdes**: Representam as conexões (falanges) da mão.
+- Esse visual facilita a calibração do gesto pelo usuário antes de realizar um teste ou gravação.
+
+---
+
+## 7. Como Reproduzir os Scripts
 
 ### Requisitos
 - Python 3.10 ou 3.11.
