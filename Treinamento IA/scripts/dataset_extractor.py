@@ -22,11 +22,18 @@ import mediapipe as mp
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Treinamento IA root
-DATASETS_DIR = os.path.join(BASE_DIR, "data", "datasets")
+DATASETS_DIR = os.path.join(BASE_DIR, "datasets")
 UNIFIED_JSON_DIR = os.path.join(BASE_DIR, "data", "unified_cache")
 CACHE_FILE = os.path.join(BASE_DIR, "data", "extraction_cache.json")
 
-ALLOWED_LABELS = ['A', 'B', 'C', 'D', 'E', 'I', 'L', 'O', 'P', 'S', 'U', 'V', 'W', 'X', 'Y']
+ALLOWED_LABELS = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 
+    'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'
+]
+
+# Letras que são radicalmente diferentes ou dinâmicas em Libras comparadas à ASL.
+# Para estas letras, ignoramos bases americanas/estrangeiras para evitar confusão no modelo.
+LIBRAS_ONLY_LABELS = ['F', 'T', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'Z']
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -37,8 +44,18 @@ def load_cache():
     return {}
 
 def save_cache(cache_db):
-    with open(CACHE_FILE, 'w') as f:
-        json.dump(cache_db, f)
+    temp_file = CACHE_FILE + ".tmp"
+    try:
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(cache_db, f)
+        # Substituição atômica no SO (previne corrupção se o processo cair no meio)
+        if os.path.exists(CACHE_FILE):
+            os.remove(CACHE_FILE)
+        os.rename(temp_file, CACHE_FILE)
+    except Exception as e:
+        print(f"\n[ERRO] Falha ao salvar cache: {e}")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
 
 def get_class_from_path(file_path):
     return os.path.basename(os.path.dirname(file_path)).strip().upper()
@@ -92,6 +109,12 @@ def process_chunk(chunk_jobs, allowed_labels, datasets_dir):
                 if not raw_label or raw_label == 'NULL' or raw_label not in allowed_labels:
                     local_cache[cache_key] = {"status": "ignored"}
                     continue
+                    
+                # NOVO FILTRO: Ignorar sinais críticos também na base NPY (que é americana)
+                if raw_label in ['F', 'T', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'Z']:
+                    local_cache[cache_key] = {"status": "ignored_libras_only"}
+                    continue
+                    
                 label = raw_label
                 raw_img = x_npy_local[job['idx']]
                 if raw_img.dtype != np.uint8:
@@ -129,7 +152,13 @@ def run_extraction():
             if 'MNIST' in p or 'mnist' in p.lower(): continue
             label = get_class_from_path(p)
             if label in ALLOWED_LABELS:
-                all_images.append(p)
+                # FILTRO ESTRITO: Se a letra for crítica, IGNORA QUALQUER IMAGEM!
+                # Essas letras só entrarão via 'dataset_custom' (.json) lidos no neural_engine
+                if label in LIBRAS_ONLY_LABELS:
+                    continue
+                else:
+                    # Letras comuns/seguras podem vir de qualquer base de imagens
+                    all_images.append(p)
             
     print(f"[EXTRACTOR] {len(all_images)} amostras primárias (Físicas) válidas pela Whitelist.")
     
@@ -187,6 +216,10 @@ def run_extraction():
                 total_processed += len(chunk_result)
             except Exception as e:
                 print(f"\n[EXTRACTOR] Lote falhou catastróficamente: {e}")
+            
+            # Salvar de forma atômica a cada ~2000 amostras
+            if total_processed % 2000 == 0:
+                save_cache(cache)
                 
             display_total = min(total_processed, len(pending_jobs))
             
@@ -194,7 +227,8 @@ def run_extraction():
             mins, secs = divmod(int(elapsed), 60)
             print(f"\r[{mins:02d}:{secs:02d}] [EXTRACTOR] Processando Lotes em Paralelo... ({display_total}/{len(pending_jobs)})", end="", flush=True)
             
-            save_cache(cache)
+        # Garantir salvamento final
+        save_cache(cache)
             
     except KeyboardInterrupt:
         print("\n[EXTRACTOR] Interrompido pelo usuário (Ctrl+C). Cancelando e fechando workers...")

@@ -15,10 +15,10 @@ import tensorflow as tf
 
 # --- CONFIGURAÇÃO DE CAMINHOS ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TRAIN_DIR = os.path.join(BASE_DIR, "Treinamento IA/datasets")
-H5_PATH = os.path.join(TRAIN_DIR, "modelo_gestos.h5")
-LABELS_PATH = os.path.join(TRAIN_DIR, "labels.txt")
-CUSTOM_DATASET_ROOT = os.path.join(TRAIN_DIR, "dataset_custom")
+TRAIN_DIR = os.path.join(BASE_DIR, "Treinamento IA")
+H5_PATH = os.path.join(TRAIN_DIR, "models", "modelo_gestos.h5")
+LABELS_PATH = os.path.join(TRAIN_DIR, "models", "labels.txt")
+CUSTOM_DATASET_ROOT = os.path.join(TRAIN_DIR, "data", "datasets", "dataset_custom")
 
 class AILiveCaptureTool:
     def __init__(self):

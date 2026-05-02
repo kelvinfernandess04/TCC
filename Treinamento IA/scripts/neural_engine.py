@@ -1,5 +1,6 @@
 import os
 import json
+import glob
 import numpy as np
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
@@ -15,7 +16,10 @@ LABELS_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'labels.txt')
 CACHE_FILE = os.path.join(BASE_DIR, 'data', 'extraction_cache.json')
 CUSTOM_JSON_DIR = os.path.join(BASE_DIR, 'data', 'datasets', 'dataset_custom')
 
-ALLOWED_LABELS = ['A', 'B', 'C', 'D', 'E', 'I', 'L', 'O', 'P', 'S', 'U', 'V', 'W', 'X', 'Y']
+ALLOWED_LABELS = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 
+    'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'
+]
 
 def run_neural_engine():
     logging.info("--- [FASE 2] Montando Matriz Neural do Cache ---")
@@ -23,19 +27,24 @@ def run_neural_engine():
     y = []
     
     # 2.1 Puxar do cache recém varrido 
+    samples_cache = 0
     if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-            cache = json.load(f)
-            for k, meta in cache.items():
-                if meta.get("status") == "success":
-                    label = meta["label"].upper()
-                    if label in ALLOWED_LABELS:
-                        X.append(meta["pts"])
-                        y.append(label)
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+                for k, meta in cache.items():
+                    if meta.get("status") == "success":
+                        label = meta["label"].upper()
+                        if label in ALLOWED_LABELS:
+                            X.append(meta["pts"])
+                            y.append(label)
+            samples_cache = len(X)
+        except Exception as e:
+            logging.error(f"Cache corrompido ou inválido: {e}. Tente apagar o arquivo '{CACHE_FILE}' e rodar o extrator novamente.")
     
     # 2.2 Puxar do Custom Json Directory (Recursivo / Catálogo)
+    samples_custom = 0
     if os.path.exists(CUSTOM_JSON_DIR):
-        import glob
         json_files = glob.glob(os.path.join(CUSTOM_JSON_DIR, "**", "*.json"), recursive=True)
         logging.info(f"Localizados {len(json_files)} arquivos de catálogo customizado.")
         
@@ -43,16 +52,13 @@ def run_neural_engine():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    # Formato Novo: { metadata: {label: ...}, frames: [ {landmarks: ...}, ... ] }
                     if "metadata" in data and "frames" in data:
-                        # Lógica Proativa: Catalogamos TUDO o que estiver no Custom (CONCHA, etc)
                         label = data["metadata"]["label"].upper()
                         for frame in data["frames"]:
                             lms = frame["landmarks"]
                             if len(lms) == 21:
                                 X.append(lms)
                                 y.append(label)
-                    # Formato Antigo (Legado): { item_id: { labels: [...], landmarks: [...] } }
                     else:
                         for item_id, item_data in data.items():
                             labels = item_data.get('labels', [])
@@ -65,7 +71,10 @@ def run_neural_engine():
                                     y.append(label)
             except Exception as e:
                 logging.warning(f"Erro ao ler custom json: {path} -> {e}")
+        samples_custom = len(X) - samples_cache
 
+    logging.info(f"Amostras carregadas do Cache (Datasets): {samples_cache}")
+    logging.info(f"Amostras carregadas do Custom (Capturas): {samples_custom}")
     logging.info(f"Total de amostras brutas garimpadas para treinamento: {len(X)}")
     
     if len(X) == 0:

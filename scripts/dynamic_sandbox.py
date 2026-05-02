@@ -9,8 +9,9 @@ os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRAIN_DIR = os.path.join(BASE_DIR, "Treinamento IA")
-H5_PATH = os.path.join(TRAIN_DIR, "modelo_gestos.h5")
-LABELS_PATH = os.path.join(TRAIN_DIR, "labels.txt")
+H5_PATH = os.path.join(TRAIN_DIR, "models", "modelo_gestos.h5")
+LABELS_PATH = os.path.join(TRAIN_DIR, "models", "labels.txt")
+CUSTOM_DATASET_ROOT = os.path.join(TRAIN_DIR, "data", "datasets", "dataset_custom")
 
 class DynamicSandbox:
     def __init__(self):
@@ -49,6 +50,9 @@ class DynamicSandbox:
         self.report = {}
         
         self.countdown_start_time = 0
+        self.typing_intent = "TEST" # Pode ser "TEST" ou "RECORD"
+        
+        os.makedirs(CUSTOM_DATASET_ROOT, exist_ok=True)
 
     def normalize_hand(self, hand_landmarks):
         pts = [[lm.x, lm.y] for lm in hand_landmarks.landmark]
@@ -70,7 +74,7 @@ class DynamicSandbox:
         self.mp_draw.draw_landmarks(frame, landmarks, connections)
         norm_coords = self.normalize_hand(landmarks)
         
-        data = {"shape_prediction": "NENHUM", "confidence": 0.0}
+        data = {"shape_prediction": "NENHUM", "confidence": 0.0, "raw_pts": [[lm.x, lm.y] for lm in landmarks.landmark]}
         
         if self.model:
             inp = np.array([norm_coords], dtype=np.float32)
@@ -111,6 +115,47 @@ class DynamicSandbox:
             "final_score": final_score
         }
 
+    def save_session_to_catalog(self):
+        from datetime import datetime
+        import json
+        
+        class_dir = os.path.join(CUSTOM_DATASET_ROOT, self.target_sign)
+        os.makedirs(class_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"captura_{timestamp}.json"
+        save_path = os.path.join(class_dir, filename)
+        
+        export_data = {
+            "metadata": {
+                "label": self.target_sign,
+                "timestamp": timestamp,
+                "frame_count": len(self.recorded_frames)
+            },
+            "frames": []
+        }
+        
+        for idx, f in enumerate(self.recorded_frames):
+            # Prioriza mão com maior confiança, se não, apenas pega a primeira detectada ou vazia
+            if f["left"]["raw_pts"] and f["right"]["raw_pts"]:
+                pts = f["left"]["raw_pts"] if f["left"]["confidence"] > f["right"]["confidence"] else f["right"]["raw_pts"]
+            elif f["left"]["raw_pts"]:
+                pts = f["left"]["raw_pts"]
+            elif f["right"]["raw_pts"]:
+                pts = f["right"]["raw_pts"]
+            else:
+                pts = []
+            
+            export_data["frames"].append({
+                "id": idx,
+                "landmarks": pts
+            })
+            
+        with open(save_path, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, indent=2)
+            
+        print(f"[CATÁLOGO] Salvo com sucesso em: {self.target_sign}/{filename}")
+
     def run(self):
         cap = cv2.VideoCapture(0)
         
@@ -125,8 +170,8 @@ class DynamicSandbox:
             results = self.holistic.process(image_rgb)
             
             frame_data = {
-                "left": {"shape_prediction": "NENHUM", "confidence": 0.0},
-                "right": {"shape_prediction": "NENHUM", "confidence": 0.0}
+                "left": {"shape_prediction": "NENHUM", "confidence": 0.0, "raw_pts": []},
+                "right": {"shape_prediction": "NENHUM", "confidence": 0.0, "raw_pts": []}
             }
             
             if results.left_hand_landmarks:
@@ -140,7 +185,7 @@ class DynamicSandbox:
                 elapsed = time.time() - self.countdown_start_time
                 remaining = 3.0 - elapsed
                 if remaining <= 0:
-                    self.mode = "RECORD_TEST"
+                    self.mode = "RECORD_TEST" if self.typing_intent == "TEST" else "RECORD_NEW"
                     self.recorded_frames = []
                     self.result_score = 0.0
             elif self.mode == "RECORD_TEST":
@@ -150,6 +195,14 @@ class DynamicSandbox:
                     self.result_score = report["final_score"]
                     self.report = report
                     self.result_message = "APROVADO!" if self.result_score >= 70.0 else "REPROVADO!"
+                    self.mode = "RESULT"
+            elif self.mode == "RECORD_NEW":
+                self.recorded_frames.append(frame_data)
+                if len(self.recorded_frames) >= self.MAX_FRAMES:
+                    self.save_session_to_catalog()
+                    self.result_score = 100.0
+                    self.report = None
+                    self.result_message = "SINAL GRAVADO!"
                     self.mode = "RESULT"
                         
             if self.mode == "COUNTDOWN":
@@ -166,19 +219,24 @@ class DynamicSandbox:
                 cv2.putText(frame, f"Dir: {frame_data['right']['shape_prediction']} ({frame_data['right']['confidence']*100:.0f}%)", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 150, 255), 1)
                 
                 if self.mode == "IDLE":
-                    cv2.putText(frame, "[T] Iniciar Teste", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(frame, "[T] Iniciar Teste", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    cv2.putText(frame, "[G] Gravar Novo Sinal", (10, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 
-                elif self.mode == "RECORD_TEST":
-                    cv2.putText(frame, f"GRAVANDO: {self.target_sign}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                elif self.mode in ["RECORD_TEST", "RECORD_NEW"]:
+                    action_text = "TESTANDO" if self.mode == "RECORD_TEST" else "GRAVANDO"
+                    color = (0, 0, 255) if self.mode == "RECORD_TEST" else (0, 255, 255)
+                    cv2.putText(frame, f"{action_text}: {self.target_sign}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                     prog = int((len(self.recorded_frames) / self.MAX_FRAMES) * 330)
                     cv2.rectangle(frame, (10, 160), (340, 175), (50, 50, 50), -1)
-                    cv2.rectangle(frame, (10, 160), (10 + prog, 175), (0, 0, 255), -1)
+                    cv2.rectangle(frame, (10, 160), (10 + prog, 175), color, -1)
             
             elif self.mode == "TYPING":
                 overlay = frame.copy()
                 cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
                 cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
-                cv2.putText(frame, "QUAL SINAL VOCE VAI TESTAR?", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+                
+                msg = "QUAL SINAL VOCE VAI TESTAR?" if self.typing_intent == "TEST" else "QUAL SINAL DESEJA GRAVAR?"
+                cv2.putText(frame, msg, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 cv2.putText(frame, f"> {self.typed_text}_", (50, 180), cv2.FONT_HERSHEY_DUPLEX, 2.0, (0, 255, 255), 3)
                 cv2.putText(frame, "Digite a letra e aperte [ENTER]", (50, h - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
                 
@@ -215,9 +273,15 @@ class DynamicSandbox:
                 elif 32 <= key <= 126:
                     self.typed_text += chr(key).upper()
                     
-            elif self.mode == "IDLE" and key == ord('t'):
-                self.mode = "TYPING"
-                self.typed_text = ""
+            elif self.mode == "IDLE":
+                if key == ord('t'):
+                    self.mode = "TYPING"
+                    self.typing_intent = "TEST"
+                    self.typed_text = ""
+                elif key == ord('g'):
+                    self.mode = "TYPING"
+                    self.typing_intent = "RECORD"
+                    self.typed_text = ""
                 
             elif self.mode == "RESULT" and key == 32:
                 self.mode = "IDLE"
