@@ -77,8 +77,12 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
                     await new Promise((resolve) => {
                         video.onloadedmetadata = () => {
                             video.play();
-                            canvas.width = video.videoWidth;
-                            canvas.height = video.videoHeight;
+                            canvas.width = window.innerWidth;
+                            canvas.height = window.innerHeight;
+                            window.addEventListener('resize', () => {
+                                canvas.width = window.innerWidth;
+                                canvas.height = window.innerHeight;
+                            });
                             resolve();
                         };
                     });
@@ -138,22 +142,43 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
                 return norm;
             }
 
+            function getScaledCoords(landmark) {
+                const vw = video.videoWidth;
+                const vh = video.videoHeight;
+                const cw = canvas.width;
+                const ch = canvas.height;
+                
+                const scale = Math.max(cw / vw, ch / vh);
+                const scaledW = vw * scale;
+                const scaledH = vh * scale;
+                const offsetX = (cw - scaledW) / 2;
+                const offsetY = (ch - scaledH) / 2;
+                
+                return {
+                    x: (landmark.x * scaledW) + offsetX,
+                    y: (landmark.y * scaledH) + offsetY
+                };
+            }
+
             function drawHand(landmarks) {
                 // Desenhar conexões
                 ctx.strokeStyle = '#00FF00';
                 ctx.lineWidth = 3;
                 for (const [start, end] of HAND_CONNECTIONS) {
+                    const p1 = getScaledCoords(landmarks[start]);
+                    const p2 = getScaledCoords(landmarks[end]);
                     ctx.beginPath();
-                    ctx.moveTo(landmarks[start].x * canvas.width, landmarks[start].y * canvas.height);
-                    ctx.lineTo(landmarks[end].x * canvas.width, landmarks[end].y * canvas.height);
+                    ctx.moveTo(p1.x, p1.y);
+                    ctx.lineTo(p2.x, p2.y);
                     ctx.stroke();
                 }
 
                 // Desenhar pontos
                 ctx.fillStyle = '#FFFFFF';
                 for (let i = 0; i < landmarks.length; i++) {
+                    const p = getScaledCoords(landmarks[i]);
                     ctx.beginPath();
-                    ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI);
+                    ctx.arc(p.x, p.y, 4, 0, 2 * Math.PI);
                     ctx.fill();
                 }
             }

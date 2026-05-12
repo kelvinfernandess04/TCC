@@ -7,8 +7,9 @@ Esta documentação descreve detalhadamente a arquitetura, lógica e funcionalid
 ## 1. Visão Geral do Projeto
 
 O projeto é dividido em dois grandes pilares:
-1.  **Pipeline de Treinamento (`Treinamento IA/`)**: Responsável por converter imagens brutas e bases de dados em coordenadas matemáticas (landmarks) e treinar um modelo de Rede Neural Profunda (Deep Learning).
-2.  **Scripts de Execução e Teste (`scripts/`)**: Ferramentas para capturar novos dados em tempo real e testar a assertividade do modelo em um ambiente de "Sandbox".
+
+1. **Pipeline de Treinamento (`Treinamento IA/`)**: Responsável por converter imagens brutas e bases de dados em coordenadas matemáticas (landmarks) e treinar um modelo de Rede Neural Profunda (Deep Learning).
+2. **Scripts de Execução e Teste (`scripts/`)**: Ferramentas para capturar novos dados em tempo real e testar a assertividade do modelo em um ambiente de "Sandbox".
 
 ---
 
@@ -27,57 +28,87 @@ O projeto é dividido em dois grandes pilares:
 O pipeline é orquestrado de forma sequencial para garantir a integridade dos dados.
 
 ### 3.1 `treinamento.py` (O Orquestrador)
+
 **Função**: Centralizar a execução de todas as fases do projeto.
--   **Fase 1**: Chama o `dataset_extractor.py` para processar as imagens.
--   **Fase 2-5**: Chama o `neural_engine.py` para treinar a rede neural.
--   **Fase 6**: Chama o `update_poc.py` (opcional) para atualizar o front-end com os novos modelos.
--   **Lógica**: Utiliza `subprocess.call` para garantir que uma fase só comece se a anterior terminar com sucesso (código de retorno 0).
+-**Fase 1**: Chama o `dataset_extractor.py` para processar as imagens.
+
+- **Fase 2-5**: Chama o `neural_engine.py` para treinar a rede neural.
+- **Fase 6**: Chama o `update_poc.py` (opcional) para atualizar o front-end com os novos modelos.
+- **Lógica**: Utiliza `subprocess.call` para garantir que uma fase só comece se a anterior terminar com sucesso (código de retorno 0).
 
 ### 3.2 `dataset_extractor.py` (Extração de Landmarks)
+
 **Função**: Converter imagens/vídeos em pontos (landmarks) da mão usando MediaPipe, com alta performance via Multiprocessing.
 
--   **Multiprocessing (`ProcessPoolExecutor`)**: Utiliza `N-1` núcleos do processador para processar milhares de imagens em paralelo.
--   **Sistema de Cache (`extraction_cache.json`)**: Salva o resultado de cada imagem processada. Se o script for rodado novamente, ele só processa arquivos novos ou alterados (baseado em Hash/Mtime), economizando horas de processamento.
--   **Whitelist**: Apenas as classes definidas em `ALLOWED_LABELS` são processadas.
--   **Suporte NPY**: Consegue ler datasets virtuais gigantes (como o de 27 classes) sem carregar tudo na RAM, usando `mmap_mode`.
+- **Multiprocessing (`ProcessPoolExecutor`)**: Utiliza `N-1` núcleos do processador para processar milhares de imagens em paralelo.
+- **Sistema de Cache (`extraction_cache.json`)**: Salva o resultado de cada imagem processada. Se o script for rodado novamente, ele só processa arquivos novos ou alterados (baseado em Hash/Mtime), economizando horas de processamento.
+- **Whitelist**: Apenas as classes definidas em `ALLOWED_LABELS` são processadas.
+- **Suporte NPY**: Consegue ler datasets virtuais gigantes (como o de 27 classes) sem carregar tudo na RAM, usando `mmap_mode`.
 
 **Principais Funções**:
--   `process_chunk()`: O "trabalhador" que roda em cada núcleo. Inicializa o MediaPipe e processa um lote de imagens.
--   `run_extraction()`: Varre os diretórios, identifica o que precisa ser processado e distribui o trabalho entre os núcleos.
+
+- `process_chunk()`: O "trabalhador" que roda em cada núcleo. Inicializa o MediaPipe e processa um lote de imagens.
+- `run_extraction()`: Varre os diretórios, identifica o que precisa ser processado e distribui o trabalho entre os núcleos.
 
 ### 3.3 `neural_engine.py` (Motor Neural)
+
 **Função**: Definir a arquitetura da rede neural e realizar o treinamento usando TensorFlow/Keras.
 
--   **Arquitetura do Modelo**: Uma rede `Sequential` com camadas `Dense` (Totalmente Conectadas), `BatchNormalization` (para estabilizar o treino) e `Dropout` (para evitar Overfitting).
--   **Data Augmentation**: Como as mãos podem estar rotacionadas ou em tamanhos diferentes, o script gera variações artificiais (Rotação, Ruído, Escala e Espelhamento/Ambidestria) para tornar o modelo mais robusto.
--   **Normalização Bounding Box**: Crucial para o sistema funcionar independente da distância da câmera. Ele centraliza a mão em um quadrado de 0 a 1.
--   **Early Stopping**: Interrompe o treino automaticamente se o modelo parar de evoluir, restaurando os melhores pesos.
+- **Algoritmo de Treinamento**: Rede Neural Profunda (DNN) do tipo Multilayer Perceptron (MLP).
+- **Estrutura de Dados (Input)**: Recebe um vetor de 42 números (21 landmarks x 2 coordenadas X/Y).
+- **Data Augmentation (Aumento de Dados)**:
+  - Multiplicador de 5x para cada amostra original.
+  - **Rotação**: Aplica variações de -30° a +30°.
+  - **Ruído Gaussiano**: Adiciona variações leves de posição para simular tremores de câmera.
+  - **Escala**: Varia o tamanho da mão em 10%.
+  - **Ambidestria (Mirroring)**: Espelha horizontalmente todos os pontos, permitindo que o modelo aprenda os sinais para as duas mãos simultaneamente.
+- **Arquitetura do Modelo**:
+    1. **Camada de Entrada**: 42 neurônios.
+    2. **Camada Oculta 1 (128 neurônios)**: Ativação ReLU + BatchNormalization + Dropout (0.2).
+    3. **Camada Oculta 2 (64 neurônios)**: Ativação ReLU + BatchNormalization + Dropout (0.2).
+    4. **Camada Oculta 3 (32 neurônios)**: Ativação ReLU + BatchNormalization.
+    5. **Camada de Saída**: Neurônios correspondentes ao número de classes (Softmax).
+- **Otimizador**: Adam (Taxa de aprendizado de 0.001).
+- **Função de Perda**: Sparse Categorical Crossentropy.
+
+#### Resumo do Modelo de IA
+
+O modelo desenvolvido **não é um fine-tuning** de modelos de imagem pré-existentes (como ResNet ou MobileNet). Em vez disso, utilizamos o **MediaPipe Holistic** como um extrator de características fixo e robusto. Nossa rede neural é treinada do zero para ser um **Classificador Geométrico Coordenativo**.
+
+- **Vantagens**: Inferência extremamente rápida (sub-milissegundos), arquivo TFLite levíssimo (~200KB) e total imunidade a variações de iluminação, cor de pele ou fundo, pois foca exclusivamente na geometria do esqueleto.
 
 **Saídas**:
--   `modelo_gestos.h5`: Modelo para uso em scripts Python desktop.
--   `modelo_gestos.tflite`: Versão otimizada para Web/Mobile.
--   `labels.txt`: Lista ordenada de sinais que o modelo aprendeu.
+
+- `modelo_gestos.h5`: Modelo para uso em scripts Python desktop.
+- `modelo_gestos.tflite`: Versão otimizada para Web/Mobile.
+- `labels.txt`: Lista ordenada de sinais que o modelo aprendeu.
 
 ---
 
 ## 4. Ferramentas de Teste e Captura (`scripts/`)
 
 ### 4.1 `realtime_trainer.py` (Captura Customizada)
+
 **Função**: Permitir que o usuário grave novos sinais que não existem em datasets públicos para alimentar a IA.
 
--   **Captura em Lote**: Grava sequências de frames (ex: 60 frames) e salva em arquivos JSON organizados por pasta de classe.
--   **HUD Visual**: Exibe na tela o que a IA está prevendo no momento e uma barra de progresso da gravação.
--   **Normalização em Tempo Real**: Aplica a mesma lógica de Bounding Box do treinamento para garantir que os dados capturados sejam idênticos ao que a IA espera.
+- **Captura em Lote**: Grava sequências de frames (ex: 60 frames) e salva em arquivos JSON organizados por pasta de classe.
+- **HUD Visual**: Exibe na tela o que a IA está prevendo no momento e uma barra de progresso da gravação.
+- **Normalização em Tempo Real**: Aplica a mesma lógica de Bounding Box do treinamento para garantir que os dados capturados sejam idênticos ao que a IA espera.
 
-### 4.2 `dynamic_sandbox.py` (Ambiente de Teste Definitivo)
+### 4.2 `dynamic_sandbox.py` (Ambiente de Teste e Validação Dinâmica)
+
 **Função**: Validar sinais do alfabeto (estáticos) e sinais dinâmicos (com movimento).
 
--   **Modo IA Direta**: Avalia continuamente o que a câmera vê e mostra a confiança da predição.
--   **Interface de Digitação**: Usa OpenCV para permitir que o usuário digite o sinal que deseja testar sem sair da janela de vídeo.
--   **Lógica de Pontuação**:
-    1.  **Precisão Temporal**: Quantos frames dos 2 segundos gravados bateram com a letra alvo.
-    2.  **Confiança Média**: Qual foi o "grau de certeza" médio da IA durante o teste.
--   **Ambidestria**: Processa tanto mão esquerda quanto direita simultaneamente.
+- **Validação Dinâmica (DTW)**: Implementa o algoritmo **Dynamic Time Warping** para comparar trajetórias.
+  - **Centro da Palma**: Calcula o centro geométrico da mão em vez de usar apenas o pulso.
+  - **Vetor Normal**: Identifica a orientação da palma (para onde a mão aponta).
+  - **Referencial de Pose**: Mede a posição da mão relativa ao centro dos ombros do usuário.
+- **Modo de Debug (Importação)**: Permite pressionar `[I]` para importar vídeos MP4 ou fotos para testar a IA sem necessidade de câmera ao vivo.
+- **Gravação de Templates**: Permite criar assinaturas dinâmicas em JSON que servem de base para os exercícios.
+- **Lógica de Pontuação Unificada**:
+    1. **Forma Estática (30%)**: Fidelidade ao formato da mão.
+    2. **Trajetória (50%)**: Precisão do movimento via DTW.
+    3. **Orientação (20%)**: Correção da direção da palma.
 
 ---
 
@@ -86,18 +117,20 @@ O pipeline é orquestrado de forma sequencial para garantir a integridade dos da
 A POC é uma aplicação mobile desenvolvida para demonstrar a portabilidade do modelo treinado para dispositivos de uso cotidiano.
 
 ### 5.1 Arquitetura da POC
+
 - **Framework**: React Native com Expo.
 - **Runtime de IA**: Utiliza uma `WebView` para rodar o motor de inferência em JavaScript de alta performance.
 - **Bibliotecas**:
-    - `@tensorflow/tfjs-tflite`: Permite rodar o modelo `.tflite` diretamente no navegador/WebView.
-    - `@mediapipe/holistic`: Implementação completa do MediaPipe para ambiente web.
+  - `@tensorflow/tfjs-tflite`: Permite rodar o modelo `.tflite` diretamente no navegador/WebView.
+  - `@mediapipe/holistic`: Implementação completa do MediaPipe para ambiente web.
 
 ### 5.2 Lógica de Funcionamento (`VisionProcessor.js`)
-1.  **Captura**: A WebView acessa a câmera do celular via `navigator.mediaDevices.getUserMedia`.
-2.  **Processamento (Holistic)**: O esqueleto da mão e do corpo é extraído pelo MediaPipe Holistic.
-3.  **Inferência**: Os pontos são normalizados (usando a mesma lógica de Bounding Box do Python) e enviados para o modelo TFLite injetado via Base64.
-4.  **Interface Visual**: O sistema renderiza no canvas um esqueleto completo (pontos e conexões), proporcionando um feedback visual preciso e alinhado com a mão do usuário.
-5.  **Ponte de Comunicação (Bridge)**: O resultado da predição é enviado para o código nativo através de `window.ReactNativeWebView.postMessage`.
+
+1. **Captura**: A WebView acessa a câmera do celular via `navigator.mediaDevices.getUserMedia`.
+2. **Processamento (Holistic)**: O esqueleto da mão e do corpo é extraído pelo MediaPipe Holistic.
+3. **Inferência**: Os pontos são normalizados (usando a mesma lógica de Bounding Box do Python) e enviados para o modelo TFLite injetado via Base64.
+4. **Correção de Exibição (Cover Fix)**: Implementa uma função de mapeamento de coordenadas (`getScaledCoords`) que ajusta o desenho do esqueleto ao CSS `object-fit: cover` do dispositivo, garantindo que os pontos fiquem perfeitamente alinhados com a mão física na tela, independente da proporção do celular.
+5. **Ponte de Comunicação (Bridge)**: O resultado da predição é enviado para o código nativo através de `window.ReactNativeWebView.postMessage`.
 
 ---
 
@@ -106,12 +139,16 @@ A POC é uma aplicação mobile desenvolvida para demonstrar a portabilidade do 
 O projeto foi totalmente unificado sob o modelo **MediaPipe Holistic** para garantir que o treinamento seja 100% compatível com a execução em tempo real.
 
 ### 6.1 Correção de Espelhamento
+
 Nas ferramentas de interface (`realtime_trainer.py` e `dynamic_sandbox.py`), o frame da câmera é invertido **antes** do processamento da IA. Isso garante que:
+
 - Os pontos desenhados fiquem perfeitamente "colados" na mão do usuário.
 - O dado processado pela IA seja idêntico ao que o usuário vê na tela (Mirror Mode).
 
 ### 6.2 Visual "Premium" (Esqueleto)
+
 Seguindo o padrão do Sandbox, o Trainer e a POC Mobile agora exibem o esqueleto completo:
+
 - **Pontos Brancos**: Representam as juntas dos dedos.
 - **Linhas Verdes**: Representam as conexões (falanges) da mão.
 - Esse visual facilita a calibração do gesto pelo usuário antes de realizar um teste ou gravação.
@@ -121,26 +158,30 @@ Seguindo o padrão do Sandbox, o Trainer e a POC Mobile agora exibem o esqueleto
 ## 7. Como Reproduzir os Scripts
 
 ### Requisitos
+
 - Python 3.10 ou 3.11.
 - Bibliotecas: `tensorflow`, `mediapipe`, `opencv-python`, `numpy`, `scikit-learn`.
 
 ### Passo a Passo
-1.  **Preparação**: Coloque suas pastas de imagens em `Treinamento IA/data/datasets/`. Cada pasta deve ter o nome da letra (ex: `A/`, `B/`).
-2.  **Extração e Treino**: Execute `python Treinamento IA/scripts/treinamento.py`. 
+
+1. **Preparação**: Coloque suas pastas de imagens em `Treinamento IA/data/datasets/`. Cada pasta deve ter o nome da letra (ex: `A/`, `B/`).
+2. **Extração e Treino**: Execute `python Treinamento IA/scripts/treinamento.py`.
     - Acompanhe o log. O cache será gerado primeiro, seguido pelo treino da rede neural.
-3.  **Captura de Novos Dados**: Se quiser adicionar um sinal próprio, rode `python scripts/realtime_trainer.py`, pressione `[R]` para gravar e digite o nome do sinal no terminal quando solicitado.
-4.  **Teste Final**: Rode `python scripts/dynamic_sandbox.py`. Use a tecla `[T]` para testar sua performance contra o modelo treinado.
+3. **Captura de Novos Dados**: Se quiser adicionar um sinal próprio, rode `python scripts/realtime_trainer.py`, pressione `[R]` para gravar e digite o nome do sinal no terminal quando solicitado.
+4. **Teste Final**: Rode `python scripts/dynamic_sandbox.py`. Use a tecla `[T]` para testar sua performance contra o modelo treinado.
 
 ---
 
 ---
+
 ## 7. Lógica de Dados (Landmarks)
 
 O sistema não olha para a "imagem" (pixels), mas para o esqueleto da mão.
--   Cada mão tem **21 pontos (Landmarks)**.
--   Cada ponto tem coordenadas **X e Y**.
--   O vetor de entrada da IA é uma lista de **42 números** (21 pontos * 2 coordenadas).
--   Toda a inteligência do sistema baseia-se na relação espacial entre esses 42 números, independente de cor de pele, fundo ou iluminação.
+
+- Cada mão tem **21 pontos (Landmarks)**.
+- Cada ponto tem coordenadas **X e Y**.
+- O vetor de entrada da IA é uma lista de **42 números** (21 pontos * 2 coordenadas).
+- Toda a inteligência do sistema baseia-se na relação espacial entre esses 42 números, independente de cor de pele, fundo ou iluminação.
 
 ---
 *Documentação gerada para o projeto TCC - Sistema Libras Engine.*
