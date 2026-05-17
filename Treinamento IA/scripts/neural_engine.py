@@ -13,52 +13,33 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Treinam
 MODEL_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'modelo_gestos.h5')
 TFLITE_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'modelo_gestos.tflite')
 LABELS_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'labels.txt')
-CACHE_FILE = os.path.join(BASE_DIR, 'data', 'extraction_cache.json')
-CUSTOM_JSON_DIR = os.path.join(BASE_DIR, 'data', 'datasets', 'dataset_custom')
-
-ALLOWED_LABELS = [
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 
-    'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'
-]
+SYNTHETIC_JSON_DIR = os.path.join(BASE_DIR, 'data', 'datasets', 'synthetic_dataset')
 
 def run_neural_engine():
-    logging.info("--- [FASE 2] Montando Matriz Neural do Cache ---")
+    logging.info("--- [FASE 2] Montando Matriz Neural do Dataset Sintético ---")
     X = []
     y = []
     
-    # 2.1 Puxar do cache recém varrido 
-    samples_cache = 0
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                cache = json.load(f)
-                for k, meta in cache.items():
-                    if meta.get("status") == "success":
-                        label = meta["label"].upper()
-                        if label in ALLOWED_LABELS:
-                            X.append(meta["pts"])
-                            y.append(label)
-            samples_cache = len(X)
-        except Exception as e:
-            logging.error(f"Cache corrompido ou inválido: {e}. Tente apagar o arquivo '{CACHE_FILE}' e rodar o extrator novamente.")
-    
-    # 2.2 Puxar do Custom Json Directory (Recursivo / Catálogo)
-    samples_custom = 0
-    if os.path.exists(CUSTOM_JSON_DIR):
-        json_files = glob.glob(os.path.join(CUSTOM_JSON_DIR, "**", "*.json"), recursive=True)
-        logging.info(f"Localizados {len(json_files)} arquivos de catálogo customizado.")
+    # Puxar exclusivamente do Synthetic Directory
+    json_files = []
+    if os.path.exists(SYNTHETIC_JSON_DIR):
+        json_files.extend(glob.glob(os.path.join(SYNTHETIC_JSON_DIR, "**", "*.json"), recursive=True))
+            
+    if json_files:
+        logging.info(f"Localizados {len(json_files)} arquivos sintéticos.")
         
         for path in json_files:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if "metadata" in data and "frames" in data:
-                        label = data["metadata"]["label"].upper()
+                        global_label = data["metadata"].get("label", "").upper()
                         for frame in data["frames"]:
+                            frame_label = frame.get("label", global_label).upper()
                             lms = frame["landmarks"]
-                            if len(lms) == 21:
+                            if len(lms) == 21 and frame_label:
                                 X.append(lms)
-                                y.append(label)
+                                y.append(frame_label)
                     else:
                         for item_id, item_data in data.items():
                             labels = item_data.get('labels', [])
@@ -70,69 +51,37 @@ def run_neural_engine():
                                     X.append(lms)
                                     y.append(label)
             except Exception as e:
-                logging.warning(f"Erro ao ler custom json: {path} -> {e}")
-        samples_custom = len(X) - samples_cache
+                logging.warning(f"Erro ao ler json sintético: {path} -> {e}")
 
-    logging.info(f"Amostras carregadas do Cache (Datasets): {samples_cache}")
-    logging.info(f"Amostras carregadas do Custom (Capturas): {samples_custom}")
-    logging.info(f"Total de amostras brutas garimpadas para treinamento: {len(X)}")
+    logging.info(f"Total de amostras brutas garimpadas para treinamento (Sintéticas): {len(X)}")
     
     if len(X) == 0:
         logging.error("Nenhuma amostra validada para treinamento. Abortando pipeline.")
         return
 
-    # FASE 3: Aumento Computacional e Normalização 
-    logging.info("--- [FASE 3] Data Augmentation e Normalização Bounding Box ---")
+    # FASE 3: Ambidestria (Espelhamento Horizontal)
+    logging.info("--- [FASE 3] Aplicando Ambidestria (Flip X) ---")
     augmented_X = []
     augmented_y = []
     
-    AUGMENTATION_MULTIPLIER = 5
-    ROTATION_ANGLES = [0, -15, 15, -30, 30]
-    
     for idx, landmarks in enumerate(X):
         label = y[idx]
-        for m in range(AUGMENTATION_MULTIPLIER):
-            for angle in ROTATION_ANGLES:
-                noise = np.random.normal(0, 0.005, size=(21, 2)) if m > 0 else np.zeros((21,2))
-                scale = np.random.uniform(0.9, 1.1) if m > 0 else 1.0
-                
-                aug_landmarks = (np.array(landmarks) * scale) + noise
-                
-                if angle != 0:
-                    angle_rad = np.radians(angle)
-                    c, s = np.cos(angle_rad), np.sin(angle_rad)
-                    R = np.array(((c, -s), (s, c)))
-                    centroid = np.mean(aug_landmarks, axis=0)
-                    aug_landmarks = np.dot(aug_landmarks - centroid, R) + centroid
-                
-                xs = aug_landmarks[:, 0]
-                ys = aug_landmarks[:, 1]
-                min_x, max_x = min(xs), max(xs)
-                min_y, max_y = min(ys), max(ys)
-                
-                width = max(max_x - min_x, 1e-6)
-                height = max(max_y - min_y, 1e-6)
-                size = max(width, height)
-                
-                normalized = []
-                for lx, ly in aug_landmarks:
-                    nx = (lx - min_x) / size
-                    ny = (ly - min_y) / size
-                    normalized.append([nx, ny])
-                    
-                flat_original = np.array(normalized).flatten()
-                augmented_X.append(flat_original)
-                augmented_y.append(label)
-                
-                # Espelhamento Horizontal (Ambidestria): inverter eixo X
-                mirrored = []
-                for nx, ny in normalized:
-                    mirrored.append(1.0 - nx)
-                    mirrored.append(ny)
-                augmented_X.append(np.array(mirrored, dtype=np.float32))
-                augmented_y.append(label)
+        
+        # Como o synthetic_generator já normaliza e adiciona ruído, 
+        # basta nivelar a array (Flatten)
+        flat_original = np.array(landmarks).flatten()
+        augmented_X.append(flat_original)
+        augmented_y.append(label)
+        
+        # Espelhamento Horizontal para a Mão Esquerda
+        mirrored = []
+        for nx, ny in landmarks:
+            mirrored.append(1.0 - nx)
+            mirrored.append(ny)
+        augmented_X.append(np.array(mirrored, dtype=np.float32).flatten())
+        augmented_y.append(label)
             
-    logging.info(f"Total de amostras após Augmentation (x{AUGMENTATION_MULTIPLIER} ruído * x{len(ROTATION_ANGLES)} ângulos + espelho): {len(augmented_X)}")
+    logging.info(f"Total de amostras prontas para treino (Base + Espelho Esquerdo): {len(augmented_X)}")
 
     # Codificação
     X_data = np.array(augmented_X, dtype=np.float32)
@@ -213,6 +162,14 @@ def run_neural_engine():
             f.write(f"{lbl}\n")
 
     logging.info(f"Modelo salvo. Classes listadas: {list(label_encoder.classes_)}")
+    
+    # ---------------------------
+    # Atualizando a POC automaticamente
+    # ---------------------------
+    logging.info("--- [FASE 6] Atualizando Front-end da POC ---")
+    import update_poc
+    update_poc.update_poc_files()
+    logging.info("POC Atualizada com o novo motor sintético.")
 
 if __name__ == "__main__":
     run_neural_engine()
