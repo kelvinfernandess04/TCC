@@ -27,41 +27,28 @@ O projeto é dividido em dois grandes pilares:
 
 O pipeline é orquestrado de forma sequencial para garantir a integridade dos dados.
 
-### 3.1 `treinamento.py` (O Orquestrador)
+## 3. Pipeline de Treinamento (`Treinamento IA/scripts/`)
 
-**Função**: Centralizar a execução de todas as fases do projeto.
--**Fase 1**: Chama o `dataset_extractor.py` para processar as imagens.
+O pipeline de Treinamento agora é centralizado e puramente sintético, eliminando a dependência de datasets empíricos ruidosos capturados por câmeras.
 
-- **Fase 2-5**: Chama o `neural_engine.py` para treinar a rede neural.
-- **Fase 6**: Chama o `update_poc.py` (opcional) para atualizar o front-end com os novos modelos.
-- **Lógica**: Utiliza `subprocess.call` para garantir que uma fase só comece se a anterior terminar com sucesso (código de retorno 0).
+### 3.1 `synthetic_generator.py` (Motor Biomecânico)
 
-### 3.2 `dataset_extractor.py` (Extração de Landmarks)
+**Função**: Construir um dataset matemático perfeito de LIBRAS a partir da cinemática de esqueleto 3D (Forward Kinematics).
 
-**Função**: Converter imagens/vídeos em pontos (landmarks) da mão usando MediaPipe, com alta performance via Multiprocessing.
+- **Arquétipos Posturais**: Substitui os limites contínuos por 4 posturas definitivas por dedo (Estendido, Garra, Soco, Plataforma).
+- **Avanço Cinesiológico**: Implementa a Lei de Landsmeer (dobra passiva da ponta do dedo), restrições dos *Connexus Intertendinei* (impede flexão do anelar isolado) e independência matricial do Polegar (CMC).
+- **Sim-to-Real Câmera**: Utiliza uma onda triangular linear (`bounce_wave`) para rotacionar a mão virtual continuamente de -85º a +85º em Pitch e Yaw, ensinando a IA a ler a mão por silhuetas de perfis colapsados, perfeitamente como o MediaPipe enxerga em casos de oclusão.
+- **Saída**: Gera um JSON com centenas de milhares de amostras perfeitas, prontas para o motor neural.
 
-- **Multiprocessing (`ProcessPoolExecutor`)**: Utiliza `N-1` núcleos do processador para processar milhares de imagens em paralelo.
-- **Sistema de Cache (`extraction_cache.json`)**: Salva o resultado de cada imagem processada. Se o script for rodado novamente, ele só processa arquivos novos ou alterados (baseado em Hash/Mtime), economizando horas de processamento.
-- **Whitelist**: Apenas as classes definidas em `ALLOWED_LABELS` são processadas.
-- **Suporte NPY**: Consegue ler datasets virtuais gigantes (como o de 27 classes) sem carregar tudo na RAM, usando `mmap_mode`.
-
-**Principais Funções**:
-
-- `process_chunk()`: O "trabalhador" que roda em cada núcleo. Inicializa o MediaPipe e processa um lote de imagens.
-- `run_extraction()`: Varre os diretórios, identifica o que precisa ser processado e distribui o trabalho entre os núcleos.
-
-### 3.3 `neural_engine.py` (Motor Neural)
+### 3.2 `neural_engine.py` (Motor Neural)
 
 **Função**: Definir a arquitetura da rede neural e realizar o treinamento usando TensorFlow/Keras.
 
 - **Algoritmo de Treinamento**: Rede Neural Profunda (DNN) do tipo Multilayer Perceptron (MLP).
 - **Estrutura de Dados (Input)**: Recebe um vetor de 42 números (21 landmarks x 2 coordenadas X/Y).
-- **Data Augmentation (Aumento de Dados)**:
-  - Multiplicador de 5x para cada amostra original.
-  - **Rotação**: Aplica variações de -30° a +30°.
-  - **Ruído Gaussiano**: Adiciona variações leves de posição para simular tremores de câmera.
-  - **Escala**: Varia o tamanho da mão em 10%.
-  - **Ambidestria (Mirroring)**: Espelha horizontalmente todos os pontos, permitindo que o modelo aprenda os sinais para as duas mãos simultaneamente.
+- **Data Augmentation Simplificado**:
+  - Como a base sintética já cobre toda a esfera espacial (rotações de 85º) com ruído embutido, não há necessidade de augumentation rotacional dinâmico.
+  - **Ambidestria (Mirroring)**: Aplica o Flip X (inversão horizontal) de todas as amostras sintéticas perfeitas da mão direita, clonando-as para a mão esquerda, resultando em milhões de amostras de treinamento simultâneo.
 - **Arquitetura do Modelo**:
     1. **Camada de Entrada**: 42 neurônios.
     2. **Camada Oculta 1 (128 neurônios)**: Ativação ReLU + BatchNormalization + Dropout (0.2).
@@ -164,17 +151,34 @@ Seguindo o padrão do Sandbox, o Trainer e a POC Mobile agora exibem o esqueleto
 
 ### Passo a Passo
 
-1. **Preparação**: Coloque suas pastas de imagens em `Treinamento IA/data/datasets/`. Cada pasta deve ter o nome da letra (ex: `A/`, `B/`).
-2. **Extração e Treino**: Execute `python Treinamento IA/scripts/treinamento.py`.
-    - Acompanhe o log. O cache será gerado primeiro, seguido pelo treino da rede neural.
-3. **Captura de Novos Dados**: Se quiser adicionar um sinal próprio, rode `python scripts/realtime_trainer.py`, pressione `[R]` para gravar e digite o nome do sinal no terminal quando solicitado.
-4. **Teste Final**: Rode `python scripts/dynamic_sandbox.py`. Use a tecla `[T]` para testar sua performance contra o modelo treinado.
+1. **Preparação Sintética**: Rode `python Treinamento IA/scripts/synthetic_generator.py` para compilar todo o JSON biomecânico base.
+2. **Treinamento e Automação POC**: Execute `python Treinamento IA/scripts/neural_engine.py`.
+    - O motor vai ler a base sintética, aplicar Ambidestria (Mirroring X), treinar o modelo, exportar o `.tflite` e atualizar a sua POC Javascript automaticamente!
+3. **Teste Final**: Rode `python scripts/dynamic_sandbox.py` (Modo Visual) ou teste direto rodando a POC com Expo localmente no seu smartphone.
 
 ---
 
+## 8. Abordagem Sintética (Forward Kinematics)
+
+Neste projeto, houve um pivô estratégico visando maior escalabilidade e robustez. Em vez de depender apenas de dados capturados empiricamente por fotos, o modelo baseia-se em um conjunto de dados 100% sintético gerado matematicamente.
+
+### 8.1 Lógica do Motor Sintético (`synthetic_generator.py`)
+Localizado na pasta `Treinamento IA/scripts/`, este script gera configurações precisas de mãos:
+- **Cinemática Direta (Matrizes de Rotação Euler)**: O modelo constrói o esqueleto da mão (21 landmarks) sem recorrer a ferramentas trigonométricas imprecisas, utilizando multiplicação contínua de matrizes Rx, Ry, Rz.
+- **Arquétipos Posturais e Landsmeer**: Em vez de variar linearmente juntas, usamos 4 arquétipos fisiológicos definidos clinicamente. A junta DIP da ponta do dedo flexiona automaticamente em coordenação passiva com a junta PIP.
+- **Matrizes Isoladas do Polegar**: As 4 fases de rotação da junta CMC (Aberto, Aduto Transversal, Oposição Plena e Gatilho) operam perfeitamente sem cruzamento ou anomalia "zig-zag" dos ossos.
+- **Oclusão Biológica (*Connexus Intertendinei*)**: Previne algoritmicamente a geração de permutações humanamente impossíveis (ex: Anelar esticado enquanto os adjacentes estão fechados), podando o excesso de lixo gerado antes mesmo do treinamento da rede.
+- **Mapeamento Cinesiológico**: A geração dinâmica resulta em mais de 450 "Classes Base", as quais representam fisicamente todo e qualquer sinal estático possível com uma mão humana, sem depender de classes alfabéticas restritas.
+
+### 8.2 Automação da Prova de Conceito (Sim-to-Real Pipeline)
+O fluxo encerra-se com a integração fluida no React Native:
+- O script de treinamento importa o módulo de `update_poc.py`.
+- O modelo `.tflite` recém-cozinhado com os dados sintéticos é codificado em Base64 e imediatamente embutido na aplicação da POC.
+- Isso estabelece um clico automatizado: Qualquer melhoria geométrica implementada no motor sintético reflete imediatamente no celular do usuário logo após o término do pipeline, blindando o projeto contra bases empíricas falhas.
+
 ---
 
-## 7. Lógica de Dados (Landmarks)
+## 9. Lógica de Dados (Landmarks)
 
 O sistema não olha para a "imagem" (pixels), mas para o esqueleto da mão.
 
