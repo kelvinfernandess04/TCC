@@ -61,31 +61,27 @@ def run_neural_engine():
 
     # FASE 3: Ambidestria (Espelhamento Horizontal)
     logging.info("--- [FASE 3] Aplicando Ambidestria (Flip X) ---")
-    augmented_X = []
-    augmented_y = []
+    # Vetorização NumPy para altíssimo desempenho em datasets gigantes
+    X_np = np.array(X, dtype=np.float32) # shape: (N, 21, 2)
+    y_np = np.array(y)
     
-    for idx, landmarks in enumerate(X):
-        label = y[idx]
-        
-        # Como o synthetic_generator já normaliza e adiciona ruído, 
-        # basta nivelar a array (Flatten)
-        flat_original = np.array(landmarks).flatten()
-        augmented_X.append(flat_original)
-        augmented_y.append(label)
-        
-        # Espelhamento Horizontal para a Mão Esquerda
-        mirrored = []
-        for nx, ny in landmarks:
-            mirrored.append(1.0 - nx)
-            mirrored.append(ny)
-        augmented_X.append(np.array(mirrored, dtype=np.float32).flatten())
-        augmented_y.append(label)
-            
-    logging.info(f"Total de amostras prontas para treino (Base + Espelho Esquerdo): {len(augmented_X)}")
-
-    # Codificação
-    X_data = np.array(augmented_X, dtype=np.float32)
-    y_data = np.array(augmented_y)
+    # Extrai o pulso (Landmark 0) e centraliza todos os pontos (Broadcast)
+    wrists = X_np[:, 0:1, :] # shape: (N, 1, 2)
+    relative_lms = X_np - wrists # shape: (N, 21, 2)
+    
+    # Flatten para (N, 42)
+    flat_original = relative_lms.reshape(X_np.shape[0], 42)
+    
+    # Espelhamento Horizontal (Inversão do eixo X em relação ao pulso)
+    mirrored_lms = relative_lms.copy()
+    mirrored_lms[:, :, 0] = -mirrored_lms[:, :, 0] # Inverte os valores de X
+    flat_mirrored = mirrored_lms.reshape(X_np.shape[0], 42)
+    
+    # Junta matrizes base e espelhadas
+    X_data = np.vstack((flat_original, flat_mirrored))
+    y_data = np.concatenate((y_np, y_np))
+    
+    logging.info(f"Total de amostras prontas para treino (Base + Espelho Esquerdo): {X_data.shape[0]}")
 
     label_encoder = LabelEncoder()
     y_encoded = label_encoder.fit_transform(y_data)
@@ -96,13 +92,13 @@ def run_neural_engine():
     # Construção Profunda 
     model = tf.keras.models.Sequential([
         tf.keras.layers.Input(shape=(42,)),
+        tf.keras.layers.Dense(512, activation='relu'),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.Dense(256, activation='relu'),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dropout(0.2),
         tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.2),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.2),
-        tf.keras.layers.Dense(32, activation='relu'),
         tf.keras.layers.BatchNormalization(),
         tf.keras.layers.Dense(num_classes, activation='softmax')
     ])
@@ -117,26 +113,37 @@ def run_neural_engine():
     import time
     # early stopping callback to avoid overfitting
     early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+    
+    # Checkpoint para salvar o melhor modelo ao longo das épocas
+    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
+    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+        filepath=MODEL_SAVE_PATH,
+        monitor='val_loss',
+        save_best_only=True,
+        verbose=1
+    )
     start_train = time.time()
-    # Otimização do Pipeline com tf.data (Batch 128 + Prefetch)
-    BATCH_SIZE = 128
+    # Otimização do Pipeline com tf.data (Mega Batch + Prefetch)
+    BATCH_SIZE = 2048
     AUTOTUNE = tf.data.AUTOTUNE
     
     train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
-    train_dataset = train_dataset.shuffle(buffer_size=len(X_train)).batch(BATCH_SIZE).prefetch(AUTOTUNE)
+    # train_test_split já embaralhou os dados perfeitamente. O shuffle_buffer massivo estava engasgando o CPU.
+    train_dataset = train_dataset.batch(BATCH_SIZE).prefetch(AUTOTUNE)
     
     val_dataset = tf.data.Dataset.from_tensor_slices((X_test, y_test))
     val_dataset = val_dataset.batch(BATCH_SIZE).prefetch(AUTOTUNE)
 
     # Fit retorna History
-    history = model.fit(train_dataset, epochs=150, validation_data=val_dataset, callbacks=[early_stopping])
+    history = model.fit(train_dataset, epochs=150, validation_data=val_dataset, callbacks=[early_stopping, checkpoint_callback])
     elapsed_train = time.time() - start_train
     mins, secs = divmod(int(elapsed_train), 60)
     # Relatório resumido
     training_report_path = os.path.join(BASE_DIR, "reports", "training_report.json")
+    os.makedirs(os.path.dirname(training_report_path), exist_ok=True)
     training_summary = {
         "total_original_samples": len(X),
-        "total_augmented_samples": len(augmented_X),
+        "total_augmented_samples": len(X_data),
         "num_classes": num_classes,
         "final_train_accuracy": float(history.history.get('accuracy', [0])[-1]),
         "final_train_loss": float(history.history.get('loss', [0])[-1]),

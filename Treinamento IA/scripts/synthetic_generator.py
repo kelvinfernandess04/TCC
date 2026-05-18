@@ -182,9 +182,9 @@ def normalize_and_add_noise(pts_2d):
     for x, y in pts_2d:
         nx = (x - min_x) / size
         ny = (y - min_y) / size
-        # Ruído de sensor mediapipe mantido apenas no 2D final para robustez (levíssimo)
-        nx += random.gauss(0, 0.002)
-        ny += random.gauss(0, 0.002)
+        # Ruído de sensor mediapipe mantido apenas no 2D final para robustez (um pouco mais alto)
+        nx += random.gauss(0, 0.005)
+        ny += random.gauss(0, 0.005)
         normalized.append([nx, ny])
         
     return normalized
@@ -239,18 +239,11 @@ def main():
         if st[1] != 2 and st[2] != 2: total_classes += 3
         else: total_classes += 1
         
-    SAMPLES_PER_STATE = 600
+    SAMPLES_PER_STATE = 1800
     total_generated = 0
     discarded_collisions = 0
     
-    dataset = {
-        "metadata": {
-            "description": "Synthetic Hand Gestures Generated via Biomechanical Archetypes",
-            "states": total_classes,
-            "samples_per_state": SAMPLES_PER_STATE
-        },
-        "frames": []
-    }
+    # Os dados serão salvos em pastas particionadas por label para economizar memória
     
     for state_tuple in states:
         # PODA ANATÔMICA: Ligamentos Colaterais
@@ -273,6 +266,14 @@ def main():
                 discarded_collisions += SAMPLES_PER_STATE
                 continue
             
+            label_dataset = {
+                "metadata": {
+                    "label": label,
+                    "samples": SAMPLES_PER_STATE
+                },
+                "frames": []
+            }
+            
             valid_samples = 0
             while valid_samples < SAMPLES_PER_STATE:
                 progress = valid_samples / float(SAMPLES_PER_STATE)
@@ -281,11 +282,9 @@ def main():
                 # O limite não é mais 90 graus (perfil perfeito), pois na LIBRAS raramente 
                 # a mão fica em 90 graus absolutos (esconde os dedos).
                 
-                # Pitch (Frente/Trás): Vai de -85 a 85 graus (Perfil Extremo)
-                target_pitch = bounce_wave(progress, 1) * 85.0
-                
-                # Yaw (Esquerda/Direita): Vai de -85 a 85 graus (Perfil Extremo)
-                target_yaw = bounce_wave(progress, 2) * 85.0
+                # Restringe o perfil a 65 graus para evitar colapso e ambiguidade tridimensional na projeção 2D
+                target_pitch = bounce_wave(progress, 1) * 65.0
+                target_yaw = bounce_wave(progress, 2) * 65.0
                 
                 # Roll (Giro do Pulso): Rotação contínua para cobrir 2 voltas na esfera
                 target_roll = progress * 360.0 * 2
@@ -293,19 +292,21 @@ def main():
                 lms_2d = apply_global_transform(lms_3d, target_pitch, target_yaw, target_roll)
                 lms_final = normalize_and_add_noise(lms_2d)
                 
-                dataset["frames"].append({
+                label_dataset["frames"].append({
                     "label": label,
                     "landmarks": lms_final
                 })
                 valid_samples += 1
                 total_generated += 1
                 
+            label_dir = os.path.join(OUTPUT_DIR, label)
+            os.makedirs(label_dir, exist_ok=True)
+            label_file = os.path.join(label_dir, "data.json")
+            with open(label_file, 'w', encoding='utf-8') as f:
+                json.dump(label_dataset, f, separators=(',', ':'))
+                
     logging.info(f"Geração concluída! Total gerado: {total_generated}. Classes rejeitadas (Colisão): {discarded_collisions}")
-    
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(dataset, f, separators=(',', ':'))
-        
-    logging.info(f"Dataset salvo em: {OUTPUT_FILE}")
+    logging.info(f"Datasets particionados salvos em subpastas dentro de: {OUTPUT_DIR}")
 
 if __name__ == "__main__":
     main()
