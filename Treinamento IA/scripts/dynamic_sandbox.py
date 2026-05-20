@@ -42,6 +42,7 @@ class DynamicSandbox:
         self.mode = "IDLE"
         self.MAX_FRAMES = 60 # 2 Segundos a 30fps
         self.recorded_frames = []
+        self.recorded_seeds = []
         
         self.target_sign = ""
         self.typed_text = ""
@@ -270,6 +271,28 @@ class DynamicSandbox:
             
         print(f"[CATÁLOGO] Salvo com sucesso em: {self.target_sign}/{filename}")
 
+    def save_seeds_session(self):
+        from datetime import datetime
+        import json
+        if not self.recorded_seeds:
+            self.mode = "IDLE"
+            return
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"captured_gestures_{timestamp}.json"
+        save_path = os.path.join(TRAIN_DIR, "data", "captured_gestures", filename)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        with open(save_path, 'w', encoding='utf-8') as f:
+            json.dump(self.recorded_seeds, f, separators=(',', ':'))
+            
+        print(f"[SEEDS] Sessao salva com sucesso em: {save_path}")
+        self.result_message = f"SEMENTES SALVAS ({len(self.recorded_seeds)} frames)"
+        self.report = None
+        self.target_sign = "CAPTURA LIVRE"
+        self.result_score = 100.0
+        self.mode = "RESULT"
+
     def run(self):
         self.video_source = 0
         cap = cv2.VideoCapture(self.video_source)
@@ -331,6 +354,12 @@ class DynamicSandbox:
                     self.report = None
                     self.result_message = "SINAL GRAVADO!"
                     self.mode = "RESULT"
+            elif self.mode == "RECORD_SEEDS":
+                # Captura raw de x,y,z da melhor mão visível na tela
+                if results.right_hand_landmarks or results.left_hand_landmarks:
+                    lms = results.right_hand_landmarks if results.right_hand_landmarks else results.left_hand_landmarks
+                    raw_pts = [{"x": lm.x, "y": lm.y, "z": lm.z} for lm in lms.landmark]
+                    self.recorded_seeds.append(raw_pts)
                         
             if self.mode == "COUNTDOWN":
                 elapsed = time.time() - self.countdown_start_time
@@ -348,7 +377,8 @@ class DynamicSandbox:
                 if self.mode == "IDLE":
                     cv2.putText(frame, "[T] Iniciar Teste", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     cv2.putText(frame, "[G] Gravar Novo Sinal", (10, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                    cv2.putText(frame, "[I] Importar Midia / [C] Camera", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 100, 200), 2)
+                    cv2.putText(frame, "[S] Gravar Sementes (Continuo)", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 150, 255), 2)
+                    cv2.putText(frame, "[I] Imp. Midia / [C] Camera", (10, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 100, 200), 2)
                 
                 elif self.mode in ["RECORD_TEST", "RECORD_NEW"]:
                     action_text = "TESTANDO" if self.mode == "RECORD_TEST" else "GRAVANDO"
@@ -357,6 +387,12 @@ class DynamicSandbox:
                     prog = int((len(self.recorded_frames) / self.MAX_FRAMES) * 330)
                     cv2.rectangle(frame, (10, 160), (340, 175), (50, 50, 50), -1)
                     cv2.rectangle(frame, (10, 160), (10 + prog, 175), color, -1)
+                
+                elif self.mode == "RECORD_SEEDS":
+                    secs = int(time.time() - self.recording_start)
+                    cv2.putText(frame, f"GRAVANDO SEMENTES... {secs}s", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    cv2.putText(frame, f"Frames Salvos: {len(self.recorded_seeds)}", (10, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                    cv2.putText(frame, "Aperte [S] novamente para parar e Salvar.", (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             
             elif self.mode == "TYPING":
                 overlay = frame.copy()
@@ -416,6 +452,11 @@ class DynamicSandbox:
                     self.mode = "TYPING"
                     self.typing_intent = "RECORD"
                     self.typed_text = ""
+                elif key == ord('s'):
+                    if self.mode == "IDLE":
+                        self.mode = "RECORD_SEEDS"
+                        self.recorded_seeds = []
+                        self.recording_start = time.time()
                 elif key == ord('i'):
                     import tkinter as tk
                     from tkinter import filedialog
@@ -435,6 +476,9 @@ class DynamicSandbox:
                 
             elif self.mode == "RESULT" and key == 32:
                 self.mode = "IDLE"
+            
+            elif self.mode == "RECORD_SEEDS" and key == ord('s'):
+                self.save_seeds_session()
 
         cap.release()
         cv2.destroyAllWindows()
