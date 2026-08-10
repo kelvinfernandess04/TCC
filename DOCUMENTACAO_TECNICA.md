@@ -188,4 +188,116 @@ O sistema não olha para a "imagem" (pixels), mas para o esqueleto da mão.
 - Toda a inteligência do sistema baseia-se na relação espacial entre esses 42 números, independente de cor de pele, fundo ou iluminação.
 
 ---
+
+## 10. Calibrador Anatômico LIBRAS 3D (`Treinamento IA/scripts/hand_calibrator.py`)
+
+O **Calibrador Anatômico LIBRAS 3D** é uma interface gráfica avançada desenvolvida em Tkinter, OpenCV e MediaPipe para inspecionar, calibrar e salvar as amplitudes articulares e poses biomecânicas da mão humana para a base sintética de gestos.
+
+### 10.1 Cinemática Direta Totalmente Relativa
+
+O calibrador implementa uma cadeia cinemática tridimensional pura baseada em matrizes de rotação Euler, onde:
+1. **Pulso como único ponto fixo**: O ponto `p0 = [0, 0, 0]` é a única coordenada estática do modelo no espaço tridimensional.
+2. **MCP (Junta 1) Móveis**: Diferente de modelos estáticos anteriores, a junta MCP (`p1`) de cada dedo se move de forma totalmente dinâmica e relativa. O ponto `p1` é obtido rotacionando a reta da base do metacarpo `palm_bases[finger]` a partir do pulso por meio da rotação tridimensional de `J1_Yaw` e `J1_Pitch`.
+3. **Propagação Relativa em Cadeia**:
+   - Cada junta subsequente (PIP/J2 e DIP/J3) é calculada rotacionando o segmento local do osso correspondente relativamente ao seu predecessor (osso anterior na cadeia).
+   - Quando Yaw e Pitch são configurados como `0.0`, os ossos subsequentes ficam perfeitamente colineares e retilíneos, eliminando distorções como o desalinhamento de yaw no ponto 18.
+4. **Controle Total e Desbloqueado**: Todos os eixos e juntas (MCP, PIP, DIP) de todos os dedos estão 100% livres para ajustes de Yaw e Pitch, tanto porSliders, caixas de entrada de texto quanto por arrasto direto tridimensional com o mouse sobre os pontos do canvas.
+
+### 10.2 Calibração Real-Time com Congelamento (Webcam)
+
+Para criar calibrações personalizadas rápidas, o usuário pode acionar a calibração com câmera:
+- **Medição Automática**: O MediaPipe Holistic mede em tempo real os ângulos das juntas MCP e PIP/DIP enquanto o usuário mexe a mão.
+- **Congelamento Seguro (Espaço)**: Ao clicar em **Espaço**, a tela de salvamento é aberta e a captura de dados de flexão (`live_ranges`) é **congelada**. A câmera continua renderizando a imagem em tempo real com a legenda `"PONTOS CONGELADOS"` em vermelho. O usuário pode retirar a mão de frente da câmera com a garantia de que as métricas acumuladas não sofrerão nenhuma corrupção.
+- **Cancelamento e Unfreeze**: Caso feche a janela de salvamento ou clique em "CANCELAR", os pontos medidos voltam a acumular normalmente.
+- **Foco Pós-Salvamento (Autofocus)**: Ao confirmar a calibração, a câmera é fechada e a interface principal foca automaticamente no primeiro dedo e estágio que foram salvos, redesenhando e ajustando a tela principal para visualização imediata da calibração adotada.
+
+### 10.3 Ingestão Inteligente de JSON (Side-by-Side)
+
+A interface de Ingestão de JSON foi projetada para ser amigável e instrutiva, dividida em duas colunas:
+- **Painel Esquerdo (Documentação)**: Um guia dinâmico e ricamente formatado que detalha como o parser inteligente traduz chaves em português, remove acentos, normaliza termos de dedos e juntas, e aplica o modelo LERP.
+- **Painel Direito (Editor)**: Área de colagem do código JSON equipada com botões rápidos de limpeza e um preenchimento automático de exemplo com placeholders instrutivos.
+
+#### Modelo de Ingestão com Placeholders (Esquema JSON)
+
+Abaixo está o modelo completo aceito pelo parser inteligente do calibrador:
+
+```json
+{
+    "stages": {
+        "_comment_1": "FORMATO POR INTERVALO (AUTOMÁTICO LERP PARA ESTÁGIOS 0-3)",
+        "indicador": {
+            "MCP": [5.0, 85.0],
+            "PIP": [5.0, 110.0]
+        },
+        "medio": {
+            "MCP": [5.0, 90.0],
+            "PIP": [5.0, 115.0]
+        },
+        "anelar": {
+            "MCP": [5.0, 80.0],
+            "PIP": [5.0, 105.0]
+        },
+        "mindinho": {
+            "MCP": [5.0, 85.0],
+            "PIP": [5.0, 100.0]
+        },
+        "_comment_2": "FORMATO EXPLÍCITO (ESTÁGIOS ESPECÍFICOS)",
+        "polegar": {
+            "estagio_0": {
+                "CMC_Yaw": -25.0,
+                "CMC_Pitch": 5.4,
+                "MCP_Pitch": 10.0,
+                "IP_Pitch": 5.0
+            },
+            "estagio_3": {
+                "CMC_Yaw": -21.2,
+                "CMC_Pitch": 37.3,
+                "MCP_Pitch": 50.0,
+                "IP_Pitch": 60.0
+            }
+        }
+    }
+}
+```
+
+```
+
+### 10.4 Visualizador de Pose (Testador de DADADADAFP)
+
+O Gerador Sintético cria milhões de classes identificadas por um código sequencial de 10 dígitos na notação estrutural **DADADADAFP**. O Calibrador possui um "Visualizador de Código de Pose" na interface para visualizar exatamente qual conformação 3D o gerador associou a esse código numérico.
+
+#### Estrutura do Padrão DADADADAFP
+
+Cada dígito do código numérico de 10 posições descreve um atributo físico da mão da extremidade externa (Mindinho) para a interna (Polegar):
+
+- `[0] D`: **Mindinho (Pinky State)** - Estágios de 0 a 3 (0=Aberto, 1=Garra, 2=Plataforma, 3=Fechado)
+- `[1] A`: **Spread Mindinho-Anelar** - 0=Aberto/Afastado, 1=Fechado/Junto
+- `[2] D`: **Anelar (Ring State)** - Estágios de 0 a 3
+- `[3] A`: **Spread Anelar-Médio** - 0=Aberto/Afastado, 1=Fechado/Junto
+- `[4] D`: **Médio (Middle State)** - Estágios de 0 a 3
+- `[5] A`: **Spread Médio-Indicador** - 0=Aberto/Afastado, 1=Fechado/Junto
+- `[6] D`: **Indicador (Index State)** - Estágios de 0 a 3
+- `[7] A`: **Spread Indicador-Polegar** - 0=Aberto/Afastado, 1=Fechado/Junto
+- `[8] F`: **Polegar - Oposição/Fold** - 0=Polegar lateral, 1=Polegar em oposição contra a palma (como no número 4 da LIBRAS)
+- `[9] P`: **Polegar - Estado Principal** - Estados [0, 2, 3] ou simplificados (0=Aberto, 1=Fechado)
+
+O Visualizador no Calibrador interpreta esses dígitos imediatamente e reflete as aberturas (yaw constraints), inclinações e estados no esqueleto 3D.
+
+---
 *Documentação gerada para o projeto TCC - Sistema Libras Engine.*
+
+
+## Taxonomia DADADADAFP
+
+A taxonomia DADADADAFP é mapeada da seguinte forma (índice 0 a 9, lendo do Mindinho para o Polegar):
+
+1. **[D] Mindinho**: Flexão (Estágios 0 a 3)
+2. **[A] Abertura Mindinho-Anelar**: Spread lateral (0 = Aberto, 1 = Fechado)
+3. **[D] Anelar**: Flexão (Estágios 0 a 3)
+4. **[A] Abertura Anelar-Médio**: Spread lateral (0 = Aberto, 1 = Fechado)
+5. **[D] Médio**: Flexão (Estágios 0 a 3)
+6. **[A] Abertura Médio-Indicador**: Spread lateral (0 = Aberto, 1 = Fechado)
+7. **[D] Indicador**: Flexão (Estágios 0 a 3)
+8. **[A] Abertura Indicador-Polegar**: Spread lateral (0 = Aberto, 1 = Fechado)
+9. **[F] Movimento Transversal (Polegar)**: (0 = Mesmo plano, 1 = Na frente da palma)
+10. **[P] Ponta do Polegar (IP)**: Flexão específica (0 = Aberta, 1 = Fechada)

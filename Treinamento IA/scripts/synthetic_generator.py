@@ -54,13 +54,13 @@ def calc_finger_chain_yaw_pitch(base_pos, base_rot_mat, lengths, yaws, pitches):
 
 def generate_hand_3d(finger_states, spread_states, thumb_opp,
                      avg_lengths, avg_palm, ranges, stages,
-                     rule_spread_constraint, rule_tendon_pinky_ring):
+                     rule_spread_constraint=False, rule_tendon_pinky_ring=False, thumb_fold_limits=None):
     """
     Generate 21 3D landmarks for a hand configuration using exact calibrated limits.
     """
     # Palm base positions (normalized static reference)
     palm_bases = {
-        'Thumb':  np.array([-0.06, 0.04, 0.02]),
+        'Thumb':  np.array([-0.16, 0.08, 0.0]),
         'Index':  np.array([-0.08, 0.45, 0.0]),
         'Middle': np.array([ 0.00, 0.48, 0.0]),
         'Ring':   np.array([ 0.08, 0.45, 0.0]),
@@ -75,8 +75,6 @@ def generate_hand_3d(finger_states, spread_states, thumb_opp,
 
     # Apply Rule B (Tendon linkage ring/pinky states)
     f_states = finger_states.copy()
-    if rule_tendon_pinky_ring:
-        f_states['Ring'] = f_states['Pinky']
 
     for finger in fingers_order:
         state = str(f_states[finger])
@@ -101,28 +99,40 @@ def generate_hand_3d(finger_states, spread_states, thumb_opp,
 
             j1_y = stages['Thumb'][state]['J1_Yaw']
             j1_p = stages['Thumb'][state]['J1_Pitch']
+            
+            if thumb_fold_limits:
+                j1_y += opp_factor * thumb_fold_limits.get('J1_Yaw_offset', -20.0)
+                j1_p += opp_factor * thumb_fold_limits.get('J1_Pitch_offset', 10.0)
+            else:
+                j1_y += opp_factor * -20.0
+                j1_p += opp_factor * 10.0
             j2_y = stages['Thumb'][state]['J2_Yaw']
             j2_p = stages['Thumb'][state]['J2_Pitch']
             j3_y = stages['Thumb'][state]['J3_Yaw']
             j3_p = stages['Thumb'][state]['J3_Pitch']
+            j4_y = stages['Thumb'][state].get('J4_Yaw', 0.0)
+            j4_p = stages['Thumb'][state].get('J4_Pitch', j3_p)
 
-            if rule_spread_constraint:
-                sp_factor = max(0.0, 1.0 - (float(state) / 3.0))
-                j1_y = j1_y * sp_factor
+            v = palm_bases['Thumb']
+            L_palm = np.linalg.norm(v)
+            yaw_base = math.degrees(math.atan2(-v[0], v[1]))
+            pitch_base = math.degrees(math.atan2(-v[2], math.hypot(v[0], v[1])))
+            R_base = rot_z(yaw_base).dot(rot_x(pitch_base))
 
-            # J1 rotates segment 0-1 (Wrist to CMC)
-            R1 = rot_z(j1_y).dot(rot_x(j1_p))
-            p1 = R1.dot(palm_bases['Thumb'])
+            # J1 controla 0-1
+            R_palm = R_base.dot(rot_z(j1_y).dot(rot_x(j1_p)))
+            p1 = R_palm.dot(np.array([0.0, L_palm, 0.0]))
+            
+            # J2 controla 1-2
+            R1 = R_palm.dot(rot_z(j2_y).dot(rot_x(j2_p)))
+            p2 = p1 + R1.dot(np.array([0.0, lengths[0], 0.0]))
+            
+            # J3 controla 2-3
+            R2 = R1.dot(rot_z(j3_y).dot(rot_x(j3_p)))
+            p3 = p2 + R2.dot(np.array([0.0, lengths[1], 0.0]))
 
-            # J2 rotates segment 1-2 (CMC to MCP)
-            R2 = R1.dot(rot_z(j2_y).dot(rot_x(j2_p)))
-            p2 = p1 + R2.dot(np.array([0.0, lengths[0], 0.0]))
-
-            # J3 rotates segment 2-3 (MCP to IP)
-            R3 = R2.dot(rot_z(j3_y).dot(rot_x(j3_p)))
-            p3 = p2 + R3.dot(np.array([0.0, lengths[1], 0.0]))
-
-            # Segment 3-4 (IP to Tip) follows segment 2-3 (relative rotation 0.0)
+            # J4 controla 3-4
+            R3 = R2.dot(rot_z(j4_y).dot(rot_x(j4_p)))
             p4 = p3 + R3.dot(np.array([0.0, lengths[2], 0.0]))
 
             chain = [p1, p2, p3, p4]
@@ -131,24 +141,20 @@ def generate_hand_3d(finger_states, spread_states, thumb_opp,
             j1_p = stages[finger][state]['J1_Pitch']
             j2_y = stages[finger][state]['J2_Yaw']
             j2_p = stages[finger][state]['J2_Pitch']
-            j3_y = stages[finger][state]['J3_Yaw']
-            j3_p = stages[finger][state]['J3_Pitch']
+            j3_y = stages[finger][state].get('J3_Yaw', 0.0)
+            j3_p = stages[finger][state].get('J3_Pitch', 0.0)
+            j4_y = stages[finger][state].get('J4_Yaw', 0.0)
+            j4_p = stages[finger][state].get('J4_Pitch', j3_p)
 
             j2_y = 0.0
             j3_y = 0.0
-            j3_p = j2_p
+            j4_y = 0.0
 
             # Rule A: Spread constraint
             mi_sp = spread_states['Middle_Index']
             rm_sp = spread_states['Ring_Middle']
             pr_sp = spread_states['Pinky_Ring']
             it_sp = spread_states['Index_Thumb']
-
-            if rule_spread_constraint:
-                if f_states['Middle'] > 1 or f_states['Index'] > 1: mi_sp = 0
-                if f_states['Ring'] > 1 or f_states['Middle'] > 1: rm_sp = 0
-                if f_states['Pinky'] > 1 or f_states['Ring'] > 1: pr_sp = 0
-                if f_states['Index'] > 1 or f_states['Thumb'] > 1: it_sp = 0
 
             idx_th_ang = lerp(ranges['Spread']['Index_Thumb'][0], ranges['Spread']['Index_Thumb'][1], it_sp)
             mi_ind_ang = lerp(ranges['Spread']['Middle_Index'][0], ranges['Spread']['Middle_Index'][1], mi_sp)
@@ -167,32 +173,45 @@ def generate_hand_3d(finger_states, spread_states, thumb_opp,
             elif finger == 'Pinky':
                 j1_y -= pk_rg_ang * 0.5
 
-            if rule_spread_constraint:
-                sp_factor = max(0.0, 1.0 - (float(state) / 3.0))
-                j1_y = j1_y * sp_factor
+            if False:
+                pass
 
-            # J1 rotates segment 0-base (Wrist to MCP)
-            R1 = rot_z(j1_y).dot(rot_x(j1_p))
-            p1 = R1.dot(palm_bases[finger])
+            if finger == 'Thumb':
+                R1 = rot_z(j1_y).dot(rot_x(j1_p))
+                p1 = R1.dot(palm_bases['Thumb'])
+                
+                R2 = R1.dot(rot_z(j2_y).dot(rot_x(j2_p)))
+                p2 = p1 + R2.dot(np.array([0.0, lengths[0], 0.0]))
+                
+                R3 = R2.dot(rot_z(j3_y).dot(rot_x(j3_p)))
+                p3 = p2 + R3.dot(np.array([0.0, lengths[1], 0.0]))
+                
+                p4 = p3 + R3.dot(np.array([0.0, lengths[2], 0.0]))
+            else:
+                v = palm_bases[finger]
+                yaw_base = math.degrees(math.atan2(-v[0], v[1]))
+                pitch_base = math.degrees(math.atan2(-v[2], math.hypot(v[0], v[1])))
+                R_base = rot_z(yaw_base).dot(rot_x(pitch_base))
 
-            # J2 rotates segment base-mid1
-            R2 = R1.dot(rot_z(j2_y).dot(rot_x(j2_p)))
-            p2 = p1 + R2.dot(np.array([0.0, lengths[0], 0.0]))
+                # J1 controls 0-5
+                R_palm = R_base.dot(rot_z(j1_y).dot(rot_x(j1_p)))
+                p1 = R_palm.dot(np.array([0.0, avg_palm[finger], 0.0]))
 
-            # J3 rotates segment mid1-mid2
-            R3 = R2.dot(rot_z(j3_y).dot(rot_x(j3_p)))
-            p3 = p2 + R3.dot(np.array([0.0, lengths[1], 0.0]))
+                # J2 controls 5-6
+                R1 = R_palm.dot(rot_z(j2_y).dot(rot_x(j2_p)))
+                p2 = p1 + R1.dot(np.array([0.0, lengths[0], 0.0]))
 
-            # Tip follows mid2 segment (relative rotation 0.0)
-            p4 = p3 + R3.dot(np.array([0.0, lengths[2], 0.0]))
+                # J3 controls 6-7
+                R2 = R1.dot(rot_z(j3_y).dot(rot_x(j3_p)))
+                p3 = p2 + R2.dot(np.array([0.0, lengths[1], 0.0]))
 
-            chain = [p1, p2, p3, p4]
+                # J4 controls 7-8
+                R3 = R2.dot(rot_z(j4_y).dot(rot_x(j4_p)))
+                p4 = p3 + R3.dot(np.array([0.0, lengths[2], 0.0]))
+
+                chain = [p1, p2, p3, p4]
 
         landmarks_3d.extend(chain)
-
-    # Biomechanical clinical safety filter (disabled so that user-defined limits are strictly respected)
-    # if landmarks_3d[1][2] < landmarks_3d[0][2] - 0.01:
-    #     return None
 
     return landmarks_3d
 
@@ -294,18 +313,35 @@ def main():
     logging.info("  GERADOR SINTÉTICO DE LIBRAS (Varredura Contínua 3D)")
     logging.info("=" * 60)
 
+    # Regras desativadas
+    rule_spread_constraint = False
+    rule_tendon_pinky_ring = False
+
     # 1. Carregar calibração manual do usuário
     stages = None
-    rule_spread_constraint = True
-    rule_tendon_pinky_ring = True
+
+    # Proporções anatômicas padrão
+    avg_lengths = {
+        'Thumb':  [0.0914, 0.0771, 0.0621],
+        'Index':  [0.0998, 0.0640, 0.0532],
+        'Middle': [0.1102, 0.0769, 0.0578],
+        'Ring':   [0.1001, 0.0700, 0.0553],
+        'Pinky':  [0.0768, 0.0517, 0.0454]
+    }
+    avg_palm = {
+        'Thumb': 0.070, 'Index': 0.240, 'Middle': 0.245, 'Ring': 0.235, 'Pinky': 0.210
+    }
 
     if os.path.exists(CALIBRATION_FILE):
         try:
             with open(CALIBRATION_FILE, 'r', encoding='utf-8') as f:
                 calib = json.load(f)
             stages = calib.get("stages", None)
-            rule_spread_constraint = calib.get("rule_spread_constraint", True)
-            rule_tendon_pinky_ring = calib.get("rule_tendon_pinky_ring", True)
+            
+            if "avg_lengths" in calib:
+                avg_lengths = calib["avg_lengths"]
+            if "avg_palm" in calib:
+                avg_palm = calib["avg_palm"]
             
             # Retroactive compatibility conversion for older saves in generator
             if stages is not None:
@@ -324,6 +360,8 @@ def main():
                                 item['J2_Pitch'] = mcp
                                 item['J3_Yaw'] = 0.0
                                 item['J3_Pitch'] = pip
+                                item['J4_Yaw'] = 0.0
+                                item['J4_Pitch'] = pip
                             else:
                                 mcp = item.get('MCP', 5.0)
                                 pip = item.get('PIP', 5.0)
@@ -334,6 +372,8 @@ def main():
                                 item['J2_Pitch'] = pip
                                 item['J3_Yaw'] = 0.0
                                 item['J3_Pitch'] = pip
+                                item['J4_Yaw'] = 0.0
+                                item['J4_Pitch'] = pip
             logging.info(f"Configurações de calibração carregadas de: {CALIBRATION_FILE}")
         except Exception as e:
             logging.warning(f"Erro ao carregar {CALIBRATION_FILE}: {e}. Usando padrões.")
@@ -386,7 +426,9 @@ def main():
                         'J2_Yaw': 0.0,
                         'J2_Pitch': pip_val,
                         'J3_Yaw': 0.0,
-                        'J3_Pitch': pip_val
+                        'J3_Pitch': pip_val,
+                        'J4_Yaw': 0.0,
+                        'J4_Pitch': pip_val
                     }
                 else:
                     cy_stages = {'0': -25.0, '1': -31.6, '2': -36.1, '3': -21.2}
@@ -397,23 +439,13 @@ def main():
                         'J2_Yaw': 0.0,
                         'J2_Pitch': mcp_val,
                         'J3_Yaw': 0.0,
-                        'J3_Pitch': pip_val
+                        'J3_Pitch': pip_val,
+                        'J4_Yaw': 0.0,
+                        'J4_Pitch': pip_val
                     }
         logging.info("Usando limites anatômicos padrões (sem arquivo de calibração).")
 
-    # Proporções anatômicas padrão
-    avg_lengths = {
-        'Thumb':  [0.0914, 0.0771, 0.0621],
-        'Index':  [0.0998, 0.0640, 0.0532],
-        'Middle': [0.1102, 0.0769, 0.0578],
-        'Ring':   [0.1001, 0.0700, 0.0553],
-        'Pinky':  [0.0768, 0.0517, 0.0454]
-    }
-    avg_palm = {
-        'Thumb': 0.070, 'Index': 0.240, 'Middle': 0.245, 'Ring': 0.235, 'Pinky': 0.210
-    }
-
-    # Se seeds.json existir, herda as proporções
+    # Se seeds.json existir, herda as proporções (sobrescreve calibração se presentes no seeds)
     if os.path.exists(SEEDS_FILE):
         try:
             with open(SEEDS_FILE, 'r', encoding='utf-8') as f:
@@ -446,25 +478,13 @@ def main():
         for pinky_s in pinky_states:
             for pr_sp in pr_spreads:
                 for ring_s in ring_states:
-                    # Regra B: compartilhamento de tendão
-                    if rule_tendon_pinky_ring and ring_s != pinky_s:
-                        continue
-                    # Regra A: spreads inválidos se flexionados
-                    if rule_spread_constraint and pr_sp == 1 and (pinky_s > 1 or ring_s > 1):
-                        continue
                     for rm_sp in rm_spreads:
                         for middle_s in middle_states:
-                            if rule_spread_constraint and rm_sp == 1 and (ring_s > 1 or middle_s > 1):
-                                continue
                             for mi_sp in mi_spreads:
                                 for index_s in index_states:
-                                    if rule_spread_constraint and mi_sp == 1 and (middle_s > 1 or index_s > 1):
-                                        continue
                                     for it_sp in it_spreads:
                                         for thumb_opp in thumb_opps:
                                             for thumb_s in thumb_states:
-                                                if rule_spread_constraint and it_sp == 1 and (index_s > 1 or thumb_s > 1):
-                                                    continue
                                                 key = f"{pinky_s}{pr_sp}{ring_s}{rm_sp}{middle_s}{mi_sp}{index_s}{it_sp}{thumb_opp}{thumb_s}"
                                                 valid_keys.append(key)
         return valid_keys
@@ -492,7 +512,8 @@ def main():
         lms_3d = generate_hand_3d(
             finger_states, spread_states, thumb_opp_state,
             avg_lengths, avg_palm, ranges, stages,
-            rule_spread_constraint, rule_tendon_pinky_ring
+            rule_spread_constraint, rule_tendon_pinky_ring,
+            thumb_fold_limits
         )
 
         if lms_3d is None:
