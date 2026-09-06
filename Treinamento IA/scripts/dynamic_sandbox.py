@@ -13,11 +13,21 @@ H5_PATH = os.path.join(TRAIN_DIR, "models", "modelo_gestos.h5")
 LABELS_PATH = os.path.join(TRAIN_DIR, "models", "labels.txt")
 CUSTOM_DATASET_ROOT = os.path.join(TRAIN_DIR, "data", "datasets", "dataset_custom")
 
+from calibrated_classifier import CalibratedLibrasClassifier
+
 class DynamicSandbox:
     def __init__(self):
         print("="*50)
-        print(" LIBRAS DYNAMIC SANDBOX (AI-POWERED) ")
+        print(" LIBRAS DYNAMIC SANDBOX (CALIBRATED SEEDS AI) ")
         print("="*50)
+
+        # Classificador Calibrado por Sementes Biomecânicas
+        self.calibrated_classifier = None
+        try:
+            self.calibrated_classifier = CalibratedLibrasClassifier()
+            print("[IA] Classificador de Seeds Calibradas Ativado com Sucesso.")
+        except Exception as e:
+            print(f"[!] Aviso: Classificador Calibrado não inicializado: {e}")
 
         self.labels = []
         if os.path.exists(LABELS_PATH):
@@ -27,7 +37,7 @@ class DynamicSandbox:
         self.model = None
         if os.path.exists(H5_PATH):
             self.model = tf.keras.models.load_model(H5_PATH)
-            print("[IA] Modelo Gestual Carregado.")
+            print("[IA] Modelo Gestual Legado H5 Carregado.")
         
         self.mp_holistic = mp.solutions.holistic
         self.mp_draw = mp.solutions.drawing_utils
@@ -129,7 +139,15 @@ class DynamicSandbox:
             "rel_body": rel_body
         }
         
-        if self.model:
+        if self.calibrated_classifier:
+            calib_res = self.calibrated_classifier.predict(landmarks.landmark)
+            data["shape_prediction"] = calib_res["clean_label"]
+            data["confidence"] = calib_res["confidence"]
+            data["seed_name"] = calib_res["seed_name"]
+            data["view_label"] = calib_res["view_label"]
+            data["tolerance_passed"] = calib_res["tolerance_passed"]
+            data["finger_errors"] = calib_res["finger_errors"]
+        elif self.model:
             inp = np.array([norm_coords], dtype=np.float32)
             pred = self.model.predict(inp, verbose=0)[0]
             idx = np.argmax(pred)

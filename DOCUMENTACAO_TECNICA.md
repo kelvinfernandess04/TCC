@@ -1,6 +1,6 @@
 # Documentação Técnica: Sistema de Reconhecimento de Libras (TCC)
 
-Esta documentação descreve detalhadamente a arquitetura, lógica e funcionalidade de todos os scripts presentes no repositório. O objetivo é permitir que qualquer desenvolvedor compreenda o funcionamento interno do sistema e consiga reproduzir o ambiente de treinamento e execução.
+Esta documentação descreve detalhadamente a arquitetura, lógica e funcionalidade de todos os scripts presentes no repositório após a atualização para o novo pipeline de extração baseada em vídeo contínuo. O objetivo é permitir que qualquer desenvolvedor compreenda o funcionamento interno do sistema e consiga reproduzir o ambiente de calibração, treinamento e execução.
 
 ---
 
@@ -8,296 +8,200 @@ Esta documentação descreve detalhadamente a arquitetura, lógica e funcionalid
 
 O projeto é dividido em dois grandes pilares:
 
-1. **Pipeline de Treinamento (`Treinamento IA/`)**: Responsável por converter imagens brutas e bases de dados em coordenadas matemáticas (landmarks) e treinar um modelo de Rede Neural Profunda (Deep Learning).
-2. **Scripts de Execução e Teste (`scripts/`)**: Ferramentas para capturar novos dados em tempo real e testar a assertividade do modelo em um ambiente de "Sandbox".
+1. **Pipeline de Calibração e Treinamento (`Treinamento IA/`)**: Responsável por extrair limites biomecânicos precisos do usuário a partir de um único vídeo de calibração, convertê-los em sementes anatômicas, expandi-los sinteticamente para um dataset massivo e treinar o modelo de Inteligência Artificial.
+2. **Ambiente de Validação (`scripts/`)**: Ferramentas para testar a assertividade do modelo treinado.
 
 ---
 
 ## 2. Estrutura de Diretórios Principal
 
-- `Treinamento IA/scripts/`: Scripts do núcleo de Inteligência Artificial.
-- `scripts/`: Utilitários de interface com o usuário e testes.
-- `Treinamento IA/data/`: Bases de dados (datasets), cache de processamento e arquivos unificados.
+- `Treinamento IA/scripts/`: Scripts do núcleo de calibração, extração e Inteligência Artificial.
+- `Treinamento IA/data/`: Configurações de calibração (`calibration_settings.json`), vídeos gravados, datasets sementes e sintéticos gerados.
 - `Treinamento IA/models/`: Onde o modelo treinado (`.h5` e `.tflite`) e as labels são salvos.
-- `Treinamento IA/reports/`: Relatórios automáticos gerados após cada fase de extração ou treino.
+- `Treinamento IA/reports/`: Relatórios automáticos e renderizações de verificação da anatomia da mão em cada fase.
 
 ---
 
-## 3. Pipeline de Treinamento (`Treinamento IA/scripts/`)
+## 3. Pipeline de Extração e Treinamento (`Treinamento IA/scripts/`)
 
-O pipeline é orquestrado de forma sequencial para garantir a integridade dos dados.
+O novo pipeline centraliza toda a extração de dados em uma única gravação de calibração biomecânica, eliminando a necessidade de digitar ângulos manualmente ou usar bases empíricas ruidosas.
 
-## 3. Pipeline de Treinamento (`Treinamento IA/scripts/`)
+### 3.1 Captura e Calibração
+O usuário grava os movimentos limites de sua mão, e o sistema extrai automaticamente as poses extremas.
+- **`video_recorder.py`**: Aplicação para gravar o vídeo biomecânico, salvando apenas a renderização dos landmarks anatômicos em tela preta (por questões de privacidade) no diretório de gravações.
+- **`video_calibrator.py`**: Roda algoritmos de análise contínua no vídeo gravado para encontrar as extensões máximas e ângulos limites.
+- **`video_inspector.py`**: Permite ao desenvolvedor inspecionar o vídeo com uma timeline interativa, verificar a telemetria em tempo real (ângulos exatos e aberturas) e confirmar ou reatribuir os *keyframes* fundamentais (Mão aberta, Garra, Gancho, Punho fechado, Oposição do Polegar, etc.).
+- **`hand_calibrator.py`**: Painel de controle (Hub UI) que integra gravador, inspetor e renderiza as coordenadas finais extraídas em um simulador 3D interativo para verificação.
 
-O pipeline de Treinamento agora é centralizado e puramente sintético, eliminando a dependência de datasets empíricos ruidosos capturados por câmeras.
+### 3.2 Geração de Base (Seeds e Dataset Sintético)
+- **`seed_extractor.py`**: Lê o `calibration_settings.json` exportado pelo inspetor e realiza o *Morphing* linear entre os *keyframes* capturados (ex: morphing do Estágio 0 para o Estágio 3). Ele gera um banco de milhares de sementes perfeitamente limitadas pela mecânica da mão real do usuário, salvando-as em `seeds.json`.
+- **`generate_seed_limit_visualizations.py`**: Processa o `seeds.json` e gera os 4 painéis de relatório gráfico na pasta `reports/` permitindo auditoria visual dos eixos de dobras e spreads anatômicos extraídos.
+- **`synthetic_generator.py` (Motor Biomecânico)**: Pega as sementes e as submete a rotações e variações espaciais rigorosas simulando pontos de vista de câmeras 3D, produzindo o banco de dados sintético final massivo (`synthetic_dataset.json`).
 
-### 3.1 `synthetic_generator.py` (Motor Biomecânico)
-
-**Função**: Construir um dataset matemático perfeito de LIBRAS a partir da cinemática de esqueleto 3D (Forward Kinematics).
-
-- **Arquétipos Posturais**: Substitui os limites contínuos por 4 posturas definitivas por dedo (Estendido, Garra, Soco, Plataforma).
-- **Avanço Cinesiológico**: Implementa a Lei de Landsmeer (dobra passiva da ponta do dedo), restrições dos *Connexus Intertendinei* (impede flexão do anelar isolado) e independência matricial do Polegar (CMC).
-- **Sim-to-Real Câmera**: Utiliza uma onda triangular linear (`bounce_wave`) para rotacionar a mão virtual continuamente de -85º a +85º em Pitch e Yaw, ensinando a IA a ler a mão por silhuetas de perfis colapsados, perfeitamente como o MediaPipe enxerga em casos de oclusão.
-- **Saída**: Gera um JSON com centenas de milhares de amostras perfeitas, prontas para o motor neural.
-
-### 3.2 `neural_engine.py` (Motor Neural)
-
-**Função**: Definir a arquitetura da rede neural e realizar o treinamento usando TensorFlow/Keras.
-
-- **Algoritmo de Treinamento**: Rede Neural Profunda (DNN) do tipo Multilayer Perceptron (MLP).
-- **Estrutura de Dados (Input)**: Recebe um vetor de 42 números (21 landmarks x 2 coordenadas X/Y).
-- **Data Augmentation Simplificado**:
-  - Como a base sintética já cobre toda a esfera espacial (rotações de 85º) com ruído embutido, não há necessidade de augumentation rotacional dinâmico.
-  - **Ambidestria (Mirroring)**: Aplica o Flip X (inversão horizontal) de todas as amostras sintéticas perfeitas da mão direita, clonando-as para a mão esquerda, resultando em milhões de amostras de treinamento simultâneo.
-- **Arquitetura do Modelo**:
-    1. **Camada de Entrada**: 42 neurônios.
-    2. **Camada Oculta 1 (128 neurônios)**: Ativação ReLU + BatchNormalization + Dropout (0.2).
-    3. **Camada Oculta 2 (64 neurônios)**: Ativação ReLU + BatchNormalization + Dropout (0.2).
-    4. **Camada Oculta 3 (32 neurônios)**: Ativação ReLU + BatchNormalization.
-    5. **Camada de Saída**: Neurônios correspondentes ao número de classes (Softmax).
-- **Otimizador**: Adam (Taxa de aprendizado de 0.001).
-- **Função de Perda**: Sparse Categorical Crossentropy.
-
-#### Resumo do Modelo de IA
-
-O modelo desenvolvido **não é um fine-tuning** de modelos de imagem pré-existentes (como ResNet ou MobileNet). Em vez disso, utilizamos o **MediaPipe Holistic** como um extrator de características fixo e robusto. Nossa rede neural é treinada do zero para ser um **Classificador Geométrico Coordenativo**.
-
-- **Vantagens**: Inferência extremamente rápida (sub-milissegundos), arquivo TFLite levíssimo (~200KB) e total imunidade a variações de iluminação, cor de pele ou fundo, pois foca exclusivamente na geometria do esqueleto.
-
-**Saídas**:
-
-- `modelo_gestos.h5`: Modelo para uso em scripts Python desktop.
-- `modelo_gestos.tflite`: Versão otimizada para Web/Mobile.
-- `labels.txt`: Lista ordenada de sinais que o modelo aprendeu.
+### 3.3 Treinamento da Inteligência Artificial
+- **`neural_engine.py` (Motor Neural)**: Roda a construção da Deep Neural Network (DNN) com as amostras sintéticas processadas e exporta o modelo TFLite. Otimizado para ignorar variações de iluminação por usar coordenadas 3D estritas.
 
 ---
 
-## 4. Ferramentas de Teste e Captura (`scripts/`)
+## 4. Teste e Validação
 
-### 4.1 `realtime_trainer.py` (Captura Customizada)
-
-**Função**: Permitir que o usuário grave novos sinais que não existem em datasets públicos para alimentar a IA.
-
-- **Captura em Lote**: Grava sequências de frames (ex: 60 frames) e salva em arquivos JSON organizados por pasta de classe.
-- **HUD Visual**: Exibe na tela o que a IA está prevendo no momento e uma barra de progresso da gravação.
-- **Normalização em Tempo Real**: Aplica a mesma lógica de Bounding Box do treinamento para garantir que os dados capturados sejam idênticos ao que a IA espera.
-
-### 4.2 `dynamic_sandbox.py` (Ambiente de Teste e Validação Dinâmica)
-
-**Função**: Validar sinais do alfabeto (estáticos) e sinais dinâmicos (com movimento).
-
-- **Validação Dinâmica (DTW)**: Implementa o algoritmo **Dynamic Time Warping** para comparar trajetórias.
-  - **Centro da Palma**: Calcula o centro geométrico da mão em vez de usar apenas o pulso.
-  - **Vetor Normal**: Identifica a orientação da palma (para onde a mão aponta).
-  - **Referencial de Pose**: Mede a posição da mão relativa ao centro dos ombros do usuário.
-- **Modo de Debug (Importação)**: Permite pressionar `[I]` para importar vídeos MP4 ou fotos para testar a IA sem necessidade de câmera ao vivo.
-- **Gravação de Templates**: Permite criar assinaturas dinâmicas em JSON que servem de base para os exercícios.
-- **Lógica de Pontuação Unificada**:
-    1. **Forma Estática (30%)**: Fidelidade ao formato da mão.
-    2. **Trajetória (50%)**: Precisão do movimento via DTW.
-    3. **Orientação (20%)**: Correção da direção da palma.
+- **`dynamic_sandbox.py`**: Ambiente interativo em tempo real via Webcam onde o usuário pode observar o MediaPipe rodando em seu corpo e a resposta imediata da rede neural (`modelo_gestos.h5`) classificando a taxonomia LIBRAS DADADADAFP desenvolvida.
 
 ---
 
-## 5. Prova de Conceito (POC Mobile)
+## 5. Taxonomia DADADADAFP
 
-A POC é uma aplicação mobile desenvolvida para demonstrar a portabilidade do modelo treinado para dispositivos de uso cotidiano.
+O modelo baseia a classificação em uma string de 10 dígitos (ex: `0100000000`), sendo cada dígito lido do Mindinho em direção ao Polegar:
 
-### 5.1 Arquitetura da POC
-
-- **Framework**: React Native com Expo.
-- **Runtime de IA**: Utiliza uma `WebView` para rodar o motor de inferência em JavaScript de alta performance.
-- **Bibliotecas**:
-  - `@tensorflow/tfjs-tflite`: Permite rodar o modelo `.tflite` diretamente no navegador/WebView.
-  - `@mediapipe/holistic`: Implementação completa do MediaPipe para ambiente web.
-
-### 5.2 Lógica de Funcionamento (`VisionProcessor.js`)
-
-1. **Captura**: A WebView acessa a câmera do celular via `navigator.mediaDevices.getUserMedia`.
-2. **Processamento (Holistic)**: O esqueleto da mão e do corpo é extraído pelo MediaPipe Holistic.
-3. **Inferência**: Os pontos são normalizados (usando a mesma lógica de Bounding Box do Python) e enviados para o modelo TFLite injetado via Base64.
-4. **Correção de Exibição (Cover Fix)**: Implementa uma função de mapeamento de coordenadas (`getScaledCoords`) que ajusta o desenho do esqueleto ao CSS `object-fit: cover` do dispositivo, garantindo que os pontos fiquem perfeitamente alinhados com a mão física na tela, independente da proporção do celular.
-5. **Ponte de Comunicação (Bridge)**: O resultado da predição é enviado para o código nativo através de `window.ReactNativeWebView.postMessage`.
+1. **[D] Mindinho**: Flexão (Estágios `0` a `3`).
+2. **[A] Abertura Mindinho-Anelar**: Spread lateral (`0` = Aberto, `1` = Fechado).
+3. **[D] Anelar**: Flexão (Estágios `0` a `3`).
+4. **[A] Abertura Anelar-Médio**: Spread lateral (`0` = Aberto, `1` = Fechado).
+5. **[D] Médio**: Flexão (Estágios `0` a `3`).
+6. **[A] Abertura Médio-Indicador**: Spread lateral (`0` = Aberto, `1` = Fechado).
+7. **[D] Indicador**: Flexão (Estágios `0` a `3`).
+8. **[A] Abertura Indicador-Polegar**: Spread lateral (`0` = Aberto, `1` = Fechado).
+9. **[F] Movimento Transversal (Polegar)**: Posição do polegar em relação à palma (`0` = Aberto/Plano da Mão, `1` = Oposição).
+10. **[P] Ponta do Polegar (IP)**: Flexão específica da falange distal do polegar (`0` = Aberta, `1` = Dobrada).
 
 ---
 
-## 6. Unificação e Estética do Sistema
+## 6. Documentação Extensa dos Scripts
 
-O projeto foi totalmente unificado sob o modelo **MediaPipe Holistic** para garantir que o treinamento seja 100% compatível com a execução em tempo real.
+Esta seção documenta pasta a pasta e script a script, fornecendo o nível de detalhe necessário para a recriação do sistema a partir do zero ou manutenção profunda.
 
-### 6.1 Correção de Espelhamento
+### 6.1 Pasta: `Treinamento IA/scripts/`
 
-Nas ferramentas de interface (`realtime_trainer.py` e `dynamic_sandbox.py`), o frame da câmera é invertido **antes** do processamento da IA. Isso garante que:
+O coração da lógica do sistema, onde ocorre a captura, calibração biomecânica, geração de base de dados e treinamento da inteligência artificial.
 
-- Os pontos desenhados fiquem perfeitamente "colados" na mão do usuário.
-- O dado processado pela IA seja idêntico ao que o usuário vê na tela (Mirror Mode).
+#### `video_recorder.py`
+- **Funcionalidade**: Aplicação gráfica (Tkinter) para gravar o usuário executando uma série de movimentos biomecânicos limites.
+- **Detalhes Técnicos**: 
+  - Inicializa o MediaPipe Hands e captura frames da webcam via `cv2.VideoCapture`. 
+  - Não grava a imagem real em RGB do usuário (garantindo privacidade dos dados da pessoa surda/usuário), mas sim um fundo preto com os landmarks anatômicos desenhados (`black_frame`).
+  - Salva o vídeo final em `data/recordings/` com codec `.mp4` (H264/mp4v). Paralelamente, armazena um arquivo `_landmarks.json` com as coordenadas brutas normalizadas e espaciais (X, Y, Z) extraídas em tempo real frame a frame, para agilizar a etapa do calibrador sem necessitar rodar o MediaPipe novamente.
+  - Oferece um roteiro de movimentos (espalmar mão, fechar mão, garras, gancho, oposição de polegar e aberturas).
 
-### 6.2 Visual "Premium" (Esqueleto)
+#### `video_calibrator.py`
+- **Funcionalidade**: Analisa automaticamente o vídeo recém-gravado para extrair as poses extremas (*keyframes*) e limites anatômicos da mão do usuário calibrador.
+- **Detalhes Técnicos**:
+  - Calcula a flexão de cada dedo individualmente e a abertura (spread) utilizando trigonometria profunda (vetores 3D e ângulos entre falanges) via a função auxiliar `joint_flexion`.
+  - Percorre todos os quadros e aplica uma heurística lógica para detectar precisamente:
+    - *Stage 0 Spread*: Mão aberta em leque máximo (baixa flexão média dos dedos, altíssimo spread lateral medido em graus).
+    - *Stage 0 Closed*: Mão estendida, dedos perfeitamente juntos (baixa flexão, baixo spread).
+    - *Stage 1*: Garra (Flexão média ao redor de 120°).
+    - *Stage 2*: Plataforma / Gancho (MCP reto, mas as juntas PIP/DIP hiper flexionadas).
+    - *Stage 3*: Punho totalmente fechado.
+    - *Thumb Opposition*: Frame com a menor distância Euclidiana entre a ponta do polegar e o metacarpo (MCP) do dedo médio.
+    - *Thumb IP Flexed*: Frame de maior flexão da falange distal do polegar, mas com seu MCP reto.
+  - Os frames chave isolados por esse motor são salvos permanentemente em `calibration_settings.json`, junto das proporções e comprimentos ósseos extraídos da mão do indivíduo.
 
-Seguindo o padrão do Sandbox, o Trainer e a POC Mobile agora exibem o esqueleto completo:
+#### `video_inspector.py`
+- **Funcionalidade**: Ferramenta de auditoria e validação visual de vídeo. Permite ao desenvolvedor ou pesquisador avançar frame a frame e auditar o trabalho feito pelo analisador automático.
+- **Detalhes Técnicos**:
+  - Implementado em Tkinter com Canvas customizado de renderização 3D, permitindo rotacionar o esqueleto (`pitch` e `yaw`) com arrasto de mouse para inspeções cirúrgicas de dobras.
+  - Possui painéis telemétricos imprimindo ao vivo a flexão somada (graus) de cada dedo e a distância transversal do polegar.
+  - O usuário pode sobrescrever a decisão do robô de calibração clicando em "Atribuir Quadro Atual", forçando que a calibração de um estágio específico utilize o frame visualizado no player.
+  - Ao concluir, o botão "Salvar Calibração Oficial" escreve o manifesto robusto contendo `captured_poses` para o motor gerador.
 
-- **Pontos Brancos**: Representam as juntas dos dedos.
-- **Linhas Verdes**: Representam as conexões (falanges) da mão.
-- Esse visual facilita a calibração do gesto pelo usuário antes de realizar um teste ou gravação.
+#### `hand_calibrator.py`
+- **Funcionalidade**: Hub centralizador da interface de calibração iterativa.
+- **Detalhes Técnicos**: Orquestra a interconexão entre as ferramentas visuais e os módulos de otimização, centralizando logs e saídas de dados do calibrador estático e dinâmico.
 
----
+#### `iterative_calibrator.py`
+- **Funcionalidade**: Refinamento e otimização não-linear da cinemática teórica da mão.
+- **Detalhes Técnicos**:
+  - Atua como uma ponte entre a matemática purista (`HandKinematicsDirect`) e a realidade empírica (`calibration_settings.json`).
+  - Emprega o método de otimização limit-bound `L-BFGS-B` da biblioteca `scipy.optimize`. 
+  - Minimização de Função de Perda (Loss): Mede a distância geométrica entre as posições assumidas pelas equações da FK (Forward Kinematics) e as posições reais medidas no vídeo de calibração, calibrando os fatores rotacionais dos ângulos estritos até chegarem na maior acurácia morfológica. 
+  - Atualiza o output em arquivos persistentes de `seeds_calibradas.json` agregando os pesos de descida.
 
-## 7. Como Reproduzir os Scripts
+#### `seed_extractor.py`
+- **Funcionalidade**: É o Extrator Anatômico Cinemático Híbrido, responsável por unir os *keyframes* capturados no mundo real à árvore de taxonomia LIBRAS DADADADAFP.
+- **Detalhes Técnicos**:
+  - A função `generate_anatomical_hand_3d` funde matrizes (`fuse_dual_plane_landmarks`).
+  - Baseando-se nas posições primordiais do `calibration_settings.json` (p_0_spread, p_1, p_2, p_3), ela constrói um algoritmo de Morphing / Interpolação Linear. Exemplo: Para o estado D2.5, a função sabe exatamente como interpolar a geometria entre o frame do Stage 2 e o frame do Stage 3 gravados no vídeo.
+  - Varre *todas as combinações válidas* da taxonomia de dedos, espalhamentos e polegares, gerando de forma automatizada e híbrida cerca de milhares de poses únicas. A base fundamental (seed) do projeto é condensada e registrada no arquivo `seeds/seeds.json`.
 
-### Requisitos
+#### `generate_seed_limit_visualizations.py`
+- **Funcionalidade**: Script de relatórios gráficos de validação ortopédica (Auditoria Visual).
+- **Detalhes Técnicos**: 
+  - Lê o volumoso `seeds.json` e busca as sementes exatas correspondentes aos extremos lógicos (Padrão 100% aberto, Padrão 100% fechado, Spreads em leque, Configurações de letras de LIBRAS A, V, W, I).
+  - Desenha um canvas limpo projetando os ossos da mão de uma visão 3D para um array 2D e gera quatro figuras (`.png`) compostas, que são depositadas no repositório em `reports/seed_verification/`. Garante que os *morphings* matemáticos não geraram ossos distorcidos.
 
-- Python 3.10 ou 3.11.
-- Bibliotecas: `tensorflow`, `mediapipe`, `opencv-python`, `numpy`, `scikit-learn`.
+#### `synthetic_generator.py` (Motor Biomecânico)
+- **Funcionalidade**: Fabrica o Dataset Massivo sintético (Data Augmentation Baseada em Mecânica, não em imagem). 
+- **Detalhes Técnicos**:
+  - Lê cada semente limpa registrada no passo anterior.
+  - Emprega matrizes de rotação de Euler (`rot_x`, `rot_y`, `rot_z`) simulando órbitas de câmeras num domo acima da mão com o algoritmo `bounce_wave` para simular uma Varredura Contínua 3D perfeita (passando por inclinações angulares variadas de visões frontais a laterais e top-down).
+  - Projeta os pontos 3D girados com correção de perspectiva Z para extrair as posições pseudo-2D.
+  - Injeta *Ruído Gaussiano* de sensores em microescala para forçar a inteligência artificial a não decorar os pontos, aumentando dramaticamente a capacidade de generalização e resiliência a câmeras ruins no mundo real.
+  - Gera pastas por classe dentro de `data/datasets/synthetic_dataset/`.
 
-### Passo a Passo
+#### `neural_engine.py` (Motor Neural)
+- **Funcionalidade**: Pipeline autônomo, robusto e multi-etapas de Treinamento e Deploy da Inteligência Artificial em Deep Learning.
+- **Detalhes Técnicos**:
+  - **Fase 1 (Conversão p/ NPZ)**: Para processar o dataset gigantesco sem MemoryLeak, ele converte em blocos (incrementalmente) os arquivos `.json` em matrizes `.npz` da biblioteca `numpy`, comprimidas para velocidade altíssima e uso mínimo de I/O.
+  - **Fase 2 (Carregamento Array)**: Carrega do disco pre-alocando Arrays de espaço imutável, e duplica espelhando o eixo X para forçar *Data Augmentation* nativo suportando destros e canhotos sem distinção. Divide em Treino (85%) e Validação (15%) acoplado em `tf.data.Dataset` (Performance `AUTOTUNE`).
+  - **Fase 3 (Construção Keras)**: Montagem de uma rede `Sequential` de múltiplas camadas densas (512 -> 256 -> 128 neurônios) utilizando ativações ReLU, `BatchNormalization` para aceleração do gradiente, e regularizadores `Dropout(0.2)` contra *overfitting*. A saída usa `Softmax` (Multiclasse categórica correspondente às dezenas/centenas de taxonomias LIBRAS).
+  - **Fase 4 (Treinamento)**: Emprega o Otimizador `Adam(lr=0.001)` e uma rotina rigorosa de `EarlyStopping` (patience 15) que devolve a rede para o estado mais performático caso o Loss de validação pare de descer.
+  - **Fase 5 (Build/Export)**: Salva a matriz de pesos treinada no arquivo hierárquico `modelo_gestos.h5`, extrai e sanitiza os rótulos preditivos codificados no `LabelEncoder` para `labels.txt`, e realiza compilação ultra compacta para TFLite (TensorFlow Lite), permitindo a portabilidade da IA para C++, Java e Mobile.
 
-1. **Preparação Sintética**: Rode `python Treinamento IA/scripts/synthetic_generator.py` para compilar todo o JSON biomecânico base.
-2. **Treinamento e Automação POC**: Execute `python Treinamento IA/scripts/neural_engine.py`.
-    - O motor vai ler a base sintética, aplicar Ambidestria (Mirroring X), treinar o modelo, exportar o `.tflite` e atualizar a sua POC Javascript automaticamente!
-3. **Teste Final**: Rode `python scripts/dynamic_sandbox.py` (Modo Visual) ou teste direto rodando a POC com Expo localmente no seu smartphone.
+#### `calibrated_classifier.py`
+- **Funcionalidade**: Agente classificador matemático que trabalha por similaridade e matriz de tolerância rigorosa, servindo como uma IA Explicável/Dura em oposição ao modelo Deep Learning tradicional. Utilizado ativamente no pipeline de calibração e em cenários onde "False-Positives" não são toleráveis.
+- **Detalhes Técnicos**:
+  - Normaliza qualquer Input de imagem da câmera (via função abstrata baseada nos mesmos cálculos do `Agent2_SpatialNormalizer`) convertendo de pixels pra relações geométricas.
+  - O casamento é obtido pelo comparativo do frame do usuário com o arquivo `seeds_calibradas.json` em uma mecânica mista: Avalia a Distância Euclidiana Ponderada pelas juntas (valorizando falanges com pesos maiores, `punitive_weights`) unida a uma verificação de Distância e Similaridade Cossecante (Cosine Similarity) da direção vetorial da mão.
+  - Entrega no final um dossiê `finger_errors` discriminando precisamente qual dedo reprovou a validação, se foi erro da tolerância standard (desvio padrão) de um cluster ou se reprovou no threshold bruto.
 
----
+#### `kinematic_seed_generator.py`
+- **Funcionalidade**: Especialista Matemático Cinemático do projeto (`HandKinematicsDirect`). Modela esqueletos perfeitamente a partir do plano matemático sem a contaminação de câmeras.
+- **Detalhes Técnicos**:
+  - Contém constantes anatômicas universais (Comprimentos metacarpais, Proporções base, Ângulos de espalhamento intrínsecos e estágios radiais em graus de dobra).
+  - Função Validadora `is_valid_pose`: Age como os ligamentos colaterais anatômicos. Restringe matrizes proibidas onde espalhamento de dedo acontece com juntas dobradas (bloqueado fisicamente em humanos). Corta abduções hiperbólicas e reduz ruído antes mesmo das matrizes rotacionais serem chamadas.
+  - Implementa Cinemática Direta com multiplicação sucessiva de rotações cartesianas localizadas no topo das pontas de cada falange, processando os 10 dígitos da taxonomia DADADADAFP.
 
-## 8. Abordagem Sintética (Forward Kinematics)
+#### `pipeline_calibracao_multiagente.py`
+- **Funcionalidade**: Coração do sistema de classificação multiagente, roda inteligência heurística para otimizar sementes sem as imperfeições da propagação reversa de Redes Neurais.
+- **Detalhes Técnicos**: Orquestra quatro agentes sequenciais:
+  - **Agent 1 (Sanitizer)**: Remove "lixo biológico" do dataset ingerido, usando varredura estatística via Z-Scores e cortes por `visibility` de rastreadores da câmera, impedindo mãos quebradas de poluir a base. 
+  - **Agent 2 (Spatial Normalizer)**: Centraliza, arrasta pulsos para a origem, constrói eixos x,y,z da base local e cria um vetor invariante gigantesco imune a rotação espacial.
+  - **Agent 3 (Dynamic Seed & Tolerance Maker)**: Usa a matemática de aprendizado não-supervisionado (`K-Means k=2`) avaliando o centroide da classe e identificando "sub-classes" espaciais (Ex: Se o sinal B tiver muita variação de Perfil vs Frontal, ele quebra o sinal em dois clusters internos). Mapeia também a tolerância aceitável baseando-se no limite natural (desvio padrão) com as quais o usuário executa suas aberturas.
+  - **Agent 4 (Confusion Optimizer)**: Faz `Cross-Validation` contra as próprias sementes. Onde ocorrer `falso positivo`, a heurística identifica a junta que diferencia aquele sinal conflituoso e adiciona "multiplicadores punitivos" apenas àquela articulação naquele grupo de classes. Ex: Se A e S se confundem, a junta do polegar passa a valer 3x o erro. Exporta no final o `seeds_calibradas.json` consolidado.
 
-Neste projeto, houve um pivô estratégico visando maior escalabilidade e robustez. Em vez de depender apenas de dados capturados empiricamente por fotos, o modelo baseia-se em um conjunto de dados 100% sintético gerado matematicamente.
+#### `pose_verifier_live.py`
+- **Funcionalidade**: Central de Diagnóstico Médico e de Software do projeto, unindo a visão computacional (Webcam) à geometria pura teórica.
+- **Detalhes Técnicos**:
+  - Levanta o tracker MediaPipe em tempo real.
+  - Renderiza um esqueleto simulado tridimensional na tela ao lado (ou sobreposto por transparência Alpha = 0.5) comparando o físico capturado do usuário contra o teórico da classe (Ex: o usuário digita "3131313111" e aparece como ele de fato deveria estar fazendo).
+  - Emite telemetria em milissegundos calculando o `RMSE (Root Mean Square Error)` global da pose e colorindo, em HUD tático, cada junta em Verde (<10%), Amarelo e Vermelho (>25%) para indicar quais articulações do indivíduo estão falhando na conformidade. Permite a emissão do log de telemetria pressionando a tecla `[S]`.
 
-### 8.1 Lógica do Motor Sintético (`synthetic_generator.py`)
-Localizado na pasta `Treinamento IA/scripts/`, este script gera configurações precisas de mãos:
-- **Cinemática Direta (Matrizes de Rotação Euler)**: O modelo constrói o esqueleto da mão (21 landmarks) sem recorrer a ferramentas trigonométricas imprecisas, utilizando multiplicação contínua de matrizes Rx, Ry, Rz.
-- **Arquétipos Posturais e Landsmeer**: Em vez de variar linearmente juntas, usamos 4 arquétipos fisiológicos definidos clinicamente. A junta DIP da ponta do dedo flexiona automaticamente em coordenação passiva com a junta PIP.
-- **Matrizes Isoladas do Polegar**: As 4 fases de rotação da junta CMC (Aberto, Aduto Transversal, Oposição Plena e Gatilho) operam perfeitamente sem cruzamento ou anomalia "zig-zag" dos ossos.
-- **Oclusão Biológica (*Connexus Intertendinei*)**: Previne algoritmicamente a geração de permutações humanamente impossíveis (ex: Anelar esticado enquanto os adjacentes estão fechados), podando o excesso de lixo gerado antes mesmo do treinamento da rede.
-- **Mapeamento Cinesiológico**: A geração dinâmica resulta em mais de 450 "Classes Base", as quais representam fisicamente todo e qualquer sinal estático possível com uma mão humana, sem depender de classes alfabéticas restritas.
-
-### 8.2 Automação da Prova de Conceito (Sim-to-Real Pipeline)
-O fluxo encerra-se com a integração fluida no React Native:
-- O script de treinamento importa o módulo de `update_poc.py`.
-- O modelo `.tflite` recém-cozinhado com os dados sintéticos é codificado em Base64 e imediatamente embutido na aplicação da POC.
-- Isso estabelece um clico automatizado: Qualquer melhoria geométrica implementada no motor sintético reflete imediatamente no celular do usuário logo após o término do pipeline, blindando o projeto contra bases empíricas falhas.
-
----
-
-## 9. Lógica de Dados (Landmarks)
-
-O sistema não olha para a "imagem" (pixels), mas para o esqueleto da mão.
-
-- Cada mão tem **21 pontos (Landmarks)**.
-- Cada ponto tem coordenadas **X e Y**.
-- O vetor de entrada da IA é uma lista de **42 números** (21 pontos * 2 coordenadas).
-- Toda a inteligência do sistema baseia-se na relação espacial entre esses 42 números, independente de cor de pele, fundo ou iluminação.
-
----
-
-## 10. Calibrador Anatômico LIBRAS 3D (`Treinamento IA/scripts/hand_calibrator.py`)
-
-O **Calibrador Anatômico LIBRAS 3D** é uma interface gráfica avançada desenvolvida em Tkinter, OpenCV e MediaPipe para inspecionar, calibrar e salvar as amplitudes articulares e poses biomecânicas da mão humana para a base sintética de gestos.
-
-### 10.1 Cinemática Direta Totalmente Relativa
-
-O calibrador implementa uma cadeia cinemática tridimensional pura baseada em matrizes de rotação Euler, onde:
-1. **Pulso como único ponto fixo**: O ponto `p0 = [0, 0, 0]` é a única coordenada estática do modelo no espaço tridimensional.
-2. **MCP (Junta 1) Móveis**: Diferente de modelos estáticos anteriores, a junta MCP (`p1`) de cada dedo se move de forma totalmente dinâmica e relativa. O ponto `p1` é obtido rotacionando a reta da base do metacarpo `palm_bases[finger]` a partir do pulso por meio da rotação tridimensional de `J1_Yaw` e `J1_Pitch`.
-3. **Propagação Relativa em Cadeia**:
-   - Cada junta subsequente (PIP/J2 e DIP/J3) é calculada rotacionando o segmento local do osso correspondente relativamente ao seu predecessor (osso anterior na cadeia).
-   - Quando Yaw e Pitch são configurados como `0.0`, os ossos subsequentes ficam perfeitamente colineares e retilíneos, eliminando distorções como o desalinhamento de yaw no ponto 18.
-4. **Controle Total e Desbloqueado**: Todos os eixos e juntas (MCP, PIP, DIP) de todos os dedos estão 100% livres para ajustes de Yaw e Pitch, tanto porSliders, caixas de entrada de texto quanto por arrasto direto tridimensional com o mouse sobre os pontos do canvas.
-
-### 10.2 Calibração Real-Time com Congelamento (Webcam)
-
-Para criar calibrações personalizadas rápidas, o usuário pode acionar a calibração com câmera:
-- **Medição Automática**: O MediaPipe Holistic mede em tempo real os ângulos das juntas MCP e PIP/DIP enquanto o usuário mexe a mão.
-- **Congelamento Seguro (Espaço)**: Ao clicar em **Espaço**, a tela de salvamento é aberta e a captura de dados de flexão (`live_ranges`) é **congelada**. A câmera continua renderizando a imagem em tempo real com a legenda `"PONTOS CONGELADOS"` em vermelho. O usuário pode retirar a mão de frente da câmera com a garantia de que as métricas acumuladas não sofrerão nenhuma corrupção.
-- **Cancelamento e Unfreeze**: Caso feche a janela de salvamento ou clique em "CANCELAR", os pontos medidos voltam a acumular normalmente.
-- **Foco Pós-Salvamento (Autofocus)**: Ao confirmar a calibração, a câmera é fechada e a interface principal foca automaticamente no primeiro dedo e estágio que foram salvos, redesenhando e ajustando a tela principal para visualização imediata da calibração adotada.
-
-### 10.3 Ingestão Inteligente de JSON (Side-by-Side)
-
-A interface de Ingestão de JSON foi projetada para ser amigável e instrutiva, dividida em duas colunas:
-- **Painel Esquerdo (Documentação)**: Um guia dinâmico e ricamente formatado que detalha como o parser inteligente traduz chaves em português, remove acentos, normaliza termos de dedos e juntas, e aplica o modelo LERP.
-- **Painel Direito (Editor)**: Área de colagem do código JSON equipada com botões rápidos de limpeza e um preenchimento automático de exemplo com placeholders instrutivos.
-
-#### Modelo de Ingestão com Placeholders (Esquema JSON)
-
-Abaixo está o modelo completo aceito pelo parser inteligente do calibrador:
-
-```json
-{
-    "stages": {
-        "_comment_1": "FORMATO POR INTERVALO (AUTOMÁTICO LERP PARA ESTÁGIOS 0-3)",
-        "indicador": {
-            "MCP": [5.0, 85.0],
-            "PIP": [5.0, 110.0]
-        },
-        "medio": {
-            "MCP": [5.0, 90.0],
-            "PIP": [5.0, 115.0]
-        },
-        "anelar": {
-            "MCP": [5.0, 80.0],
-            "PIP": [5.0, 105.0]
-        },
-        "mindinho": {
-            "MCP": [5.0, 85.0],
-            "PIP": [5.0, 100.0]
-        },
-        "_comment_2": "FORMATO EXPLÍCITO (ESTÁGIOS ESPECÍFICOS)",
-        "polegar": {
-            "estagio_0": {
-                "CMC_Yaw": -25.0,
-                "CMC_Pitch": 5.4,
-                "MCP_Pitch": 10.0,
-                "IP_Pitch": 5.0
-            },
-            "estagio_3": {
-                "CMC_Yaw": -21.2,
-                "CMC_Pitch": 37.3,
-                "MCP_Pitch": 50.0,
-                "IP_Pitch": 60.0
-            }
-        }
-    }
-}
-```
-
-```
-
-### 10.4 Visualizador de Pose (Testador de DADADADAFP)
-
-O Gerador Sintético cria milhões de classes identificadas por um código sequencial de 10 dígitos na notação estrutural **DADADADAFP**. O Calibrador possui um "Visualizador de Código de Pose" na interface para visualizar exatamente qual conformação 3D o gerador associou a esse código numérico.
-
-#### Estrutura do Padrão DADADADAFP
-
-Cada dígito do código numérico de 10 posições descreve um atributo físico da mão da extremidade externa (Mindinho) para a interna (Polegar):
-
-- `[0] D`: **Mindinho (Pinky State)** - Estágios de 0 a 3 (0=Aberto, 1=Garra, 2=Plataforma, 3=Fechado)
-- `[1] A`: **Spread Mindinho-Anelar** - 0=Aberto/Afastado, 1=Fechado/Junto
-- `[2] D`: **Anelar (Ring State)** - Estágios de 0 a 3
-- `[3] A`: **Spread Anelar-Médio** - 0=Aberto/Afastado, 1=Fechado/Junto
-- `[4] D`: **Médio (Middle State)** - Estágios de 0 a 3
-- `[5] A`: **Spread Médio-Indicador** - 0=Aberto/Afastado, 1=Fechado/Junto
-- `[6] D`: **Indicador (Index State)** - Estágios de 0 a 3
-- `[7] A`: **Spread Indicador-Polegar** - 0=Aberto/Afastado, 1=Fechado/Junto
-- `[8] F`: **Polegar - Oposição/Fold** - 0=Polegar lateral, 1=Polegar em oposição contra a palma (como no número 4 da LIBRAS)
-- `[9] P`: **Polegar - Estado Principal** - Estados [0, 2, 3] ou simplificados (0=Aberto, 1=Fechado)
-
-O Visualizador no Calibrador interpreta esses dígitos imediatamente e reflete as aberturas (yaw constraints), inclinações e estados no esqueleto 3D.
+#### `dynamic_sandbox.py`
+- **Funcionalidade**: Ambiente interativo Sandbox completo. A praça de testes finais simulando a aplicação no mundo real com a câmera ligada.
+- **Detalhes Técnicos**: 
+  - Pode carregar os modelos neurais Keras (`modelo_gestos.h5`) ou as pontuações do `CalibratedLibrasClassifier`.
+  - Suporta testes de **trajetória no tempo** (*DTW - Dynamic Time Warping*) capturando os 60 frames da interação e detectando similaridades geométricas dinâmicas comparando os vetores da palma da mão e a translação (x,y) pelo peito. 
+  - Oferece recursos em hotkeys `[T]` para Teste, `[G]` para gravar sinal novo instantaneamente adicionando metadados na base e `[S]` para gravar em fluxo raw os landmarks para *seeds*. 
+  - Computa e plota o boletim estatístico (Forma Base Estática + Similaridade de Trajetória + Orientação) julgando "Aprovado / Reprovado".
 
 ---
-*Documentação gerada para o projeto TCC - Sistema Libras Engine.*
 
+### 6.3 Pasta: `scripts/` (Ferramentas e Wrappers da Raiz)
 
-## Taxonomia DADADADAFP
+Estes scripts funcionam como pontes e utilitários auxiliares focados em atalhos para os executáveis profundos de `Treinamento IA` ou testes rápidos de integridade (DevOps/APIs).
 
-A taxonomia DADADADAFP é mapeada da seguinte forma (índice 0 a 9, lendo do Mindinho para o Polegar):
+#### `realtime_trainer.py`
+- **Funcionalidade**: Capturador rápido e iterativo sem a complexidade visual do *sandbox*. Ferramenta fundamental para coletar *Continuous Learning*.
+- **Detalhes Técnicos**: Com a câmera aberta, o usuário aperta a hotkey "R" para iniciar um buffer (array na RAM) que absorve até 60 poses consecutivas (aprox. 2 a 3 segundos). Ao finalizar o lote, pelo console ele solicita a letra correta à qual o sinal pertence e escreve o JSON com essas informações diretamente na pasta customizada `dataset_custom`, finalizando o loop instantaneamente.
 
-1. **[D] Mindinho**: Flexão (Estágios 0 a 3)
-2. **[A] Abertura Mindinho-Anelar**: Spread lateral (0 = Aberto, 1 = Fechado)
-3. **[D] Anelar**: Flexão (Estágios 0 a 3)
-4. **[A] Abertura Anelar-Médio**: Spread lateral (0 = Aberto, 1 = Fechado)
-5. **[D] Médio**: Flexão (Estágios 0 a 3)
-6. **[A] Abertura Médio-Indicador**: Spread lateral (0 = Aberto, 1 = Fechado)
-7. **[D] Indicador**: Flexão (Estágios 0 a 3)
-8. **[A] Abertura Indicador-Polegar**: Spread lateral (0 = Aberto, 1 = Fechado)
-9. **[F] Movimento Transversal (Polegar)**: (0 = Mesmo plano, 1 = Na frente da palma)
-10. **[P] Ponta do Polegar (IP)**: Flexão específica (0 = Aberta, 1 = Fechada)
+#### `testeVM.py`
+- **Funcionalidade**: Utilitário de infraestrutura de rede para o ecossistema Back-end do TCC.
+- **Detalhes Técnicos**: Utiliza a biblioteca HTTP `requests` enviando pacotes `GET` simples para as rotas base (`/health` e `/signatures/batch`) no endereço da Máquina Virtual da nuvem, verificando a conectividade do banco de dados remoto e possíveis timeouts de API.
+
+#### `visualizador_calibracao.py`
+- **Funcionalidade**: Script de ponte/Wrapper (atalho).
+- **Detalhes Técnicos**: Modifica o PATH do sistema provisoriamente em tempo de execução via `sys.path.insert` injetando o contexto do `Treinamento IA/scripts` na raíz para ser capaz de evocar e importar o pacote `Calibration3DVisualizer` e lançar o estúdio de inspeção sem causar conflitos de diretório modular.
+
+#### `pose_verifier_live.py` e `kinematic_seed_generator.py` (Versões Raiz)
+- **Funcionalidade**: Scripts wrappers para lançar as ferramentas complexas localizadas dentro de `Treinamento IA/scripts/`.
+- **Detalhes Técnicos**: Permitem que o desenvolvedor invoque diretamente os especialistas executando `python scripts/nome_do_arquivo.py` sem precisar entrar e manipular referências relativas complicadas ou criar PYTHONPATH fixo, padronizando a chamada através da função `main()`.

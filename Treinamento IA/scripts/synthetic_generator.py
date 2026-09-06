@@ -509,12 +509,16 @@ def main():
     for idx, label in enumerate(seeds_labels):
         finger_states, spread_states, thumb_opp_state = decode_label_to_states(label)
         
-        lms_3d = generate_hand_3d(
-            finger_states, spread_states, thumb_opp_state,
-            avg_lengths, avg_palm, ranges, stages,
-            rule_spread_constraint, rule_tendon_pinky_ring,
-            thumb_fold_limits
-        )
+        if label in seeds_data and isinstance(seeds_data[label], list):
+            lms_raw = seeds_data[label]
+            lms_3d = [np.array([p['x'], p['y'], p['z']]) for p in lms_raw]
+        else:
+            lms_3d = generate_hand_3d(
+                finger_states, spread_states, thumb_opp_state,
+                avg_lengths, avg_palm, ranges, stages,
+                rule_spread_constraint, rule_tendon_pinky_ring,
+                thumb_fold_limits
+            )
 
         if lms_3d is None:
             continue
