@@ -98,12 +98,18 @@ class HandKinematicsDirect:
         'Pinky':  +30.0
     }
 
-    # Mapping of Long Finger Flexion Stages D (0 to 3) to Joint Pitch Angles
+    # Mapping of Long Finger Flexion Stages D (0 to 4) to Joint Pitch Angles
+    # Stage 0: Estendido (Reto) - MCP 0°, PIP 0°, DIP 0°
+    # Stage 1: Curvado / Concha (Arco suave) - MCP 25°, PIP 40°, DIP 35°
+    # Stage 2: Gancho / Hook (Base reta, pontas dobradas) - MCP 0°, PIP 90°, DIP 75°
+    # Stage 3: Plataforma / Tabletop (Base a 85°, pontas retas) - MCP 85°, PIP 0°, DIP 0°
+    # Stage 4: Fechado / Punho (Dedo totalmente fechado) - MCP 85°, PIP 105°, DIP 80°
     FINGER_FLEXION_STAGES = {
-        0: {'J2_Pitch':  0.0, 'J3_Pitch':   0.0, 'J4_Pitch':  0.0},  # Extended
-        1: {'J2_Pitch': 15.0, 'J3_Pitch':  45.0, 'J4_Pitch': 35.0},  # Curved
-        2: {'J2_Pitch': 45.0, 'J3_Pitch':  90.0, 'J4_Pitch': 70.0},  # Hooked / Claw
-        3: {'J2_Pitch': 85.0, 'J3_Pitch': 100.0, 'J4_Pitch': 80.0}   # Fist / Clenched
+        0: {'J2_Pitch':  0.0, 'J3_Pitch':   0.0, 'J4_Pitch':  0.0},  # 0 = Estendido
+        1: {'J2_Pitch': 25.0, 'J3_Pitch':  40.0, 'J4_Pitch': 35.0},  # 1 = Curvado / Concha
+        2: {'J2_Pitch':  0.0, 'J3_Pitch':  90.0, 'J4_Pitch': 75.0},  # 2 = Gancho / Hook
+        3: {'J2_Pitch': 85.0, 'J3_Pitch':   0.0, 'J4_Pitch':  0.0},  # 3 = Plataforma / Tabletop
+        4: {'J2_Pitch': 85.0, 'J3_Pitch': 105.0, 'J4_Pitch': 80.0}   # 4 = Fechado / Punho
     }
 
     # Spread Angle Values (A) for Fingers
@@ -155,6 +161,52 @@ class HandKinematicsDirect:
             ], dtype=np.float64)
             self.palm_bases[finger] = vec
 
+    @classmethod
+    def from_calibration_file(cls, filepath: str) -> 'HandKinematicsDirect':
+        """Instantiate HandKinematicsDirect using calibrated parameters from calibration_settings.json."""
+        if not os.path.exists(filepath):
+            print(f"[HandKinematicsDirect] Arquivo de calibração não encontrado ({filepath}). Usando valores padrão.")
+            return cls()
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            stages_raw = data.get('stages', {})
+            finger_flexion_stages = {}
+            ref_finger = 'Index' if 'Index' in stages_raw else ('Middle' if 'Middle' in stages_raw else None)
+            if ref_finger and isinstance(stages_raw[ref_finger], dict):
+                for st_k, angles in stages_raw[ref_finger].items():
+                    try:
+                        st_int = int(st_k)
+                        finger_flexion_stages[st_int] = {
+                            'J2_Pitch': float(angles.get('J2_Pitch', 0.0)),
+                            'J3_Pitch': float(angles.get('J3_Pitch', 0.0)),
+                            'J4_Pitch': float(angles.get('J4_Pitch', 0.0))
+                        }
+                    except ValueError:
+                        pass
+
+            spread_angles_raw = data.get('spread_angles', {})
+            spread_angles = {}
+            for pair_k, vals in spread_angles_raw.items():
+                spread_angles[pair_k] = {}
+                for st_k, ang in vals.items():
+                    spread_angles[pair_k][int(st_k)] = float(ang)
+
+            phalanx_lengths = data.get('phalanx_lengths', None)
+            thumb_config = stages_raw.get('Thumb', data.get('thumb_config', None))
+
+            return cls(
+                phalanx_lengths=phalanx_lengths,
+                finger_flexion_stages=finger_flexion_stages if finger_flexion_stages else None,
+                spread_angles=spread_angles if spread_angles else None,
+                thumb_config=thumb_config
+            )
+        except Exception as e:
+            print(f"[HandKinematicsDirect] Erro ao carregar calibração ({e}). Usando valores padrão.")
+            return cls()
+
     @staticmethod
     def is_valid_pose(dadadafafp_code: str) -> Tuple[bool, Optional[str]]:
         """
@@ -176,8 +228,8 @@ class HandKinematicsDirect:
         # Character format checks
         d4_c, a3_c, d3_c, a2_c, d2_c, a1_c, d1_c, a0_c, f_c, p_c = dadadafafp_code
 
-        if d4_c not in '0123' or d3_c not in '0123' or d2_c not in '0123' or d1_c not in '0123':
-            return False, "Finger flexion stages [D] must be digits in '0123'"
+        if d4_c not in '01234' or d3_c not in '01234' or d2_c not in '01234' or d1_c not in '01234':
+            return False, "Finger flexion stages [D] must be digits in '01234'"
 
         if a3_c not in '01' or a2_c not in '01' or a1_c not in '01' or a0_c not in '01':
             return False, "Spread states [A] must be '0' (Open) or '1' (Closed)"
@@ -196,22 +248,27 @@ class HandKinematicsDirect:
         f  = int(f_c)   # Thumb Opposition
         p  = int(p_c)   # Thumb IP Flexion
 
-        # --- BIOMECHANICAL CONSTRAINT 1: Collateral Ligament Lock (D >= 2) ---
-        # Pinky-Ring spread locked closed (A3 = 1) if either adjacent finger is flexed (D >= 2)
-        if (d4 >= 2 or d3 >= 2) and a3 == 0:
-            return False, f"Pinky-Ring spread (A3=0) impossible when Pinky (D4={d4}) or Ring (D3={d3}) >= 2"
+        # --- BIOMECHANICAL CONSTRAINT 1: Collateral Ligament Lock (MCP flexed >= 80°) ---
+        # When MCP is flexed in Tabletop (D=3) or Fist (D=4), the collateral ligaments are
+        # taut, physically locking lateral abduction/adduction (spread) to closed (A = 1).
+        if (d4 in (3, 4) or d3 in (3, 4)) and a3 == 0:
+            return False, f"Pinky-Ring spread (A3=0) impossible when Pinky (D4={d4}) or Ring (D3={d3}) is flexed at MCP (3 or 4)"
 
-        # Ring-Middle spread locked closed (A2 = 1) if either adjacent finger is flexed (D >= 2)
-        if (d3 >= 2 or d2 >= 2) and a2 == 0:
-            return False, f"Ring-Middle spread (A2=0) impossible when Ring (D3={d3}) or Middle (D2={d2}) >= 2"
+        if (d3 in (3, 4) or d2 in (3, 4)) and a2 == 0:
+            return False, f"Ring-Middle spread (A2=0) impossible when Ring (D3={d3}) or Middle (D2={d2}) is flexed at MCP (3 or 4)"
 
-        # Middle-Index spread locked closed (A1 = 1) if either adjacent finger is flexed (D >= 2)
-        if (d2 >= 2 or d1 >= 2) and a1 == 0:
-            return False, f"Middle-Index spread (A1=0) impossible when Middle (D2={d2}) or Index (D1={d1}) >= 2"
+        if (d2 in (3, 4) or d1 in (3, 4)) and a1 == 0:
+            return False, f"Middle-Index spread (A1=0) impossible when Middle (D2={d2}) or Index (D1={d1}) is flexed at MCP (3 or 4)"
 
-        # --- BIOMECHANICAL CONSTRAINT 2: Thumb Opposition vs Abduction ---
-        # When Thumb crosses palm (F = 1) and Index is closed (D1 >= 2), wide radial abduction (A0 = 0) is restricted
-        if f == 1 and d1 >= 2 and a0 == 0:
+        # --- BIOMECHANICAL CONSTRAINT 2: Juncturae Tendinum (Ring finger coupling) ---
+        # The ring finger has intertendinous bands to middle and pinky tendons.
+        # If Middle and Pinky are fully clenched in Fist (D=4), Ring cannot be fully extended (D=0) or tabletop (D=3).
+        if d2 == 4 and d4 == 4 and d3 in (0, 3):
+            return False, f"Ring (D3={d3}) cannot be fully extended/tabletop when Middle and Pinky are clenched (D2=4, D4=4)"
+
+        # --- BIOMECHANICAL CONSTRAINT 3: Thumb Opposition vs Abduction ---
+        # When Thumb crosses palm (F = 1) and Index is closed (D1 in (3, 4)), wide radial abduction (A0 = 0) is restricted
+        if f == 1 and d1 in (3, 4) and a0 == 0:
             return False, f"Thumb wide abduction (A0=0) impossible during full opposition (F=1) with closed Index (D1={d1})"
 
         return True, None
@@ -395,19 +452,19 @@ class HandKinematicsDirect:
         valid_count = 0
         pruned_count = 0
 
-        regular_states = [0, 1, 2, 3]
+        regular_states = [0, 1, 2, 3, 4]
 
         for d4 in regular_states:
             for d3 in regular_states:
-                a3_options = [0, 1] if (d4 <= 1 and d3 <= 1) else [1]
+                a3_options = [0, 1] if (d4 <= 2 and d3 <= 2) else [1]
                 for a3 in a3_options:
 
                     for d2 in regular_states:
-                        a2_options = [0, 1] if (d3 <= 1 and d2 <= 1) else [1]
+                        a2_options = [0, 1] if (d3 <= 2 and d2 <= 2) else [1]
                         for a2 in a2_options:
 
                             for d1 in regular_states:
-                                a1_options = [0, 1] if (d2 <= 1 and d1 <= 1) else [1]
+                                a1_options = [0, 1] if (d2 <= 2 and d1 <= 2) else [1]
                                 for a1 in a1_options:
 
                                     for a0 in [0, 1]:

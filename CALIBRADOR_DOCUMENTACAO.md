@@ -144,13 +144,14 @@ O modelo final de classificação utilizará a taxonomia **DADADADAFP**, compost
 
 | Variável | Significado | Valores Possíveis | Descrição Física |
 |----------|-------------|-------------------|------------------|
-| **D** | Dedo (Flexão) | `0` | Totalmente Aberto (esticado) |
-| | | `1` | Parcialmente Curvado (J3/PIP e J4/DIP flexionados) |
-| | | `2` | Totalmente Fechado (Garrado antes de encostar na palma) |
-| | | `3` | Punho Fechado (Dedo colado na palma) |
-| **A** | Abertura (Spread) | `0` | Dedos Aberto / Separados |
-| | | `1` | Dedos Fechados / Unidos |
+| **D** | Dedo (Flexão) | `0` | **Estendido**: Totalmente Aberto (esticado reto) |
+| | | `1` | **Curvado / Concha**: Parcialmente curvado em arco suave |
+| | | `2` | **Gancho / Hook**: Base (MCP) reta, pontas (PIP/DIP) dobradas a ~90° |
+| | | `3` | **Plataforma / Tabletop**: Base (MCP) dobrada a ~90°, pontas estendidas retas |
+| | | `4` | **Fechado / Punho**: Dedo totalmente dobrado colado na palma |
+| **A** | Abertura (Spread) | `0` | Dedos Abertos / Separados em leque |
+| | | `1` | Dedos Fechados / Unidos em paralelo |
 | **F** | Transversal | `0` | Polegar no mesmo plano da mão (Mão espalmada) |
-| | | `1` | Polegar cruzando na frente da palma |
-| **P** | Ponta Polegar | `0` | Falange distal Aberta (esticada) |
-| | | `1` | Falange distal Fechada (dobrada) |
+| | | `1` | Polegar em oposição transversal cruzando na frente da palma |
+| **P** | Ponta Polegar | `0` | Falange distal (IP) Aberta (esticada) |
+| | | `1` | Falange distal (IP) Fechada (dobrada) |

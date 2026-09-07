@@ -53,16 +53,23 @@ O usuário grava os movimentos limites de sua mão, e o sistema extrai automatic
 
 O modelo baseia a classificação em uma string de 10 dígitos (ex: `0100000000`), sendo cada dígito lido do Mindinho em direção ao Polegar:
 
-1. **[D] Mindinho**: Flexão (Estágios `0` a `3`).
+1. **[D] Mindinho**: Flexão (Estágios `0` a `4`).
 2. **[A] Abertura Mindinho-Anelar**: Spread lateral (`0` = Aberto, `1` = Fechado).
-3. **[D] Anelar**: Flexão (Estágios `0` a `3`).
+3. **[D] Anelar**: Flexão (Estágios `0` a `4`).
 4. **[A] Abertura Anelar-Médio**: Spread lateral (`0` = Aberto, `1` = Fechado).
-5. **[D] Médio**: Flexão (Estágios `0` a `3`).
+5. **[D] Médio**: Flexão (Estágios `0` a `4`).
 6. **[A] Abertura Médio-Indicador**: Spread lateral (`0` = Aberto, `1` = Fechado).
-7. **[D] Indicador**: Flexão (Estágios `0` a `3`).
+7. **[D] Indicador**: Flexão (Estágios `0` a `4`).
 8. **[A] Abertura Indicador-Polegar**: Spread lateral (`0` = Aberto, `1` = Fechado).
-9. **[F] Movimento Transversal (Polegar)**: Posição do polegar em relação à palma (`0` = Aberto/Plano da Mão, `1` = Oposição).
-10. **[P] Ponta do Polegar (IP)**: Flexão específica da falange distal do polegar (`0` = Aberta, `1` = Dobrada).
+9. **[F] Movimento Transversal (Polegar)**: Posição do polegar em relação à palma (`0` = Aberto/Plano da Mão, `1` = Oposição transversal/perpendicular).
+10. **[P] Ponta do Polegar (IP)**: Flexão específica da falange distal do polegar (`0` = Aberta/Estendida, `1` = Dobrada/Flexionada).
+
+### Detalhamento dos 5 Estágios de Flexão [D]:
+- **`0` - Estendido**: Dedo completamente reto (MCP 0°, PIP 0°, DIP 0°).
+- **`1` - Curvado / Concha**: Curvatura suave e contínua de todas as falanges (MCP ~25°, PIP ~40°, DIP ~35°).
+- **`2` - Gancho / Hook**: Base (MCP) reta (~0-15°), mas juntas distais PIP/DIP dobradas a ~90°.
+- **`3` - Plataforma / Tabletop**: Base (MCP) flexionada em ângulo reto (~85-90°), mas falanges distais estendidas e retas (~0°).
+- **`4` - Fechado / Punho**: Dedo totalmente dobrado e cerrado contra a palma (MCP ~85°, PIP ~105°, DIP ~80°).
 
 ---
 
