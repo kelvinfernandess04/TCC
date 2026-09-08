@@ -10,6 +10,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'data', 'datasets', 'synthetic_dataset')
+CACHE_DIR = os.path.join(BASE_DIR, 'data', 'unified_cache')
 SEEDS_FILE = os.path.join(BASE_DIR, 'data', 'seeds', 'seeds.json')
 CALIBRATION_FILE = os.path.join(BASE_DIR, 'data', 'calibration_settings.json')
 
@@ -445,157 +446,103 @@ def main():
                     }
         logging.info("Usando limites anatômicos padrões (sem arquivo de calibração).")
 
-    # Se seeds.json existir, herda as proporções (sobrescreve calibração se presentes no seeds)
-    if os.path.exists(SEEDS_FILE):
-        try:
-            with open(SEEDS_FILE, 'r', encoding='utf-8') as f:
-                seeds = json.load(f)
-            metadata = seeds.get("__metadata__", {})
-            if "avg_lengths" in metadata:
-                avg_lengths = metadata["avg_lengths"]
-            if "avg_palm" in metadata:
-                avg_palm = metadata["avg_palm"]
-            logging.info("Metadados anatômicos herdados do seeds.json.")
-        except Exception as e:
-            pass
+    # Carregar as sementes cinemáticas reais de seeds.json
+    if not os.path.exists(SEEDS_FILE):
+        logging.error(f"Arquivo de sementes não encontrado em: {SEEDS_FILE}")
+        return
 
-    # 2. Gerar a lista de labels dinâmicas seguindo estritamente as regras ativas
-    logging.info("Gerando combinações de poses válidas biomecanicamente...")
-    
-    def get_valid_labels(rule_spread_constraint, rule_tendon_pinky_ring):
-        valid_keys = []
-        pinky_states = [0, 1, 2, 3]
-        pr_spreads = [0, 1]
-        ring_states = [0, 1, 2, 3]
-        rm_spreads = [0, 1]
-        middle_states = [0, 1, 2, 3]
-        mi_spreads = [0, 1]
-        index_states = [0, 1, 2, 3]
-        it_spreads = [0, 1]
-        thumb_opps = [0, 1]
-        thumb_states = [0, 2, 3]
-        
-        for pinky_s in pinky_states:
-            for pr_sp in pr_spreads:
-                for ring_s in ring_states:
-                    for rm_sp in rm_spreads:
-                        for middle_s in middle_states:
-                            for mi_sp in mi_spreads:
-                                for index_s in index_states:
-                                    for it_sp in it_spreads:
-                                        for thumb_opp in thumb_opps:
-                                            for thumb_s in thumb_states:
-                                                key = f"{pinky_s}{pr_sp}{ring_s}{rm_sp}{middle_s}{mi_sp}{index_s}{it_sp}{thumb_opp}{thumb_s}"
-                                                valid_keys.append(key)
-        return valid_keys
+    with open(SEEDS_FILE, 'r', encoding='utf-8') as f:
+        seeds_data = json.load(f)
 
-    seeds_labels = get_valid_labels(rule_spread_constraint, rule_tendon_pinky_ring)
+    seeds_labels = sorted([k for k in seeds_data.keys() if not k.startswith('__')])
     total_seeds = len(seeds_labels)
-    
-    # 600 frames por classe é a densidade ideal para a varredura contínua cobrir toda a esfera
-    SAMPLES_PER_STATE = 600
+
+    # 500 frames por classe é a densidade ideal para cobrir a esfera de rotação
+    SAMPLES_PER_STATE = 500
     total_samples_expected = total_seeds * SAMPLES_PER_STATE
 
-    logging.info(f"Combinações biomecânicas válidas: {total_seeds}")
-    logging.info(f"Amostras por classe: {SAMPLES_PER_STATE}")
-    logging.info(f"Total esperado: {total_samples_expected:,} amostras")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    logging.info(f"Sementes carregadas de seeds.json: {total_seeds}")
+    logging.info(f"Amostras sintéticas por classe: {SAMPLES_PER_STATE}")
+    logging.info(f"Total esperado no cache: {total_samples_expected:,} amostras")
+    logging.info(f"Diretório de cache NPZ: {CACHE_DIR}")
     logging.info("-" * 60)
 
     total_generated = 0
     start_time = time.time()
     last_log_time = start_time
-    LOG_INTERVAL_CLASSES = max(1, total_seeds // 50)
+    LOG_INTERVAL = max(1, total_seeds // 40)
 
     for idx, label in enumerate(seeds_labels):
-        finger_states, spread_states, thumb_opp_state = decode_label_to_states(label)
-        
-        if label in seeds_data and isinstance(seeds_data[label], list):
-            lms_raw = seeds_data[label]
-            lms_3d = [np.array([p['x'], p['y'], p['z']]) for p in lms_raw]
-        else:
-            lms_3d = generate_hand_3d(
-                finger_states, spread_states, thumb_opp_state,
-                avg_lengths, avg_palm, ranges, stages,
-                rule_spread_constraint, rule_tendon_pinky_ring,
-                thumb_fold_limits
-            )
+        lms_raw = seeds_data[label]
+        pts_3d = np.array([[p['x'], p['y'], p['z']] for p in lms_raw], dtype=np.float64)
 
-        if lms_3d is None:
-            continue
+        # Mover o pulso para a origem (0, 0, 0)
+        pts_3d -= pts_3d[0].copy()
 
-        # Mover o pulso para a origem (0,0,0)
-        wrist = lms_3d[0].copy()
-        lms_3d = [p - wrist for p in lms_3d]
+        # Array compacta (SAMPLES_PER_STATE, 42) de features relativizadas ao pulso
+        X_class = np.empty((SAMPLES_PER_STATE, 42), dtype=np.float32)
 
-        label_dataset = {
-            "metadata": {"label": label, "samples": SAMPLES_PER_STATE},
-            "frames": []
-        }
+        for i in range(SAMPLES_PER_STATE):
+            progress = i / float(SAMPLES_PER_STATE)
 
-        valid_samples = 0
-        while valid_samples < SAMPLES_PER_STATE:
-            progress = valid_samples / float(SAMPLES_PER_STATE)
-
-            # Varredura Contínua 3D
+            # Varredura contínua esférica
             target_pitch = bounce_wave(progress, 1) * 65.0
             target_yaw = bounce_wave(progress, 2) * 65.0
-            target_roll = progress * 360.0 * 2
+            target_roll = progress * 720.0
 
-            lms_2d = apply_global_transform(lms_3d, target_pitch, target_yaw, target_roll)
-            lms_final = normalize_and_add_noise(lms_2d)
+            Rx = rot_x(target_pitch)
+            Ry = rot_y(target_yaw)
+            Rz = rot_z(target_roll)
+            R = Rz.dot(Ry).dot(Rx)
 
-            label_dataset["frames"].append({
-                "label": label,
-                "landmarks": lms_final
-            })
-            valid_samples += 1
-            total_generated += 1
+            rot = pts_3d.dot(R.T)
+            z_factor = 4.0 / np.maximum(4.0 - rot[:, 2], 0.1)
+            x2d = rot[:, 0] * z_factor
+            y2d = rot[:, 1] * z_factor
 
-        # Salvar o dataset da classe
-        label_dir = os.path.join(OUTPUT_DIR, label)
-        os.makedirs(label_dir, exist_ok=True)
-        label_file = os.path.join(label_dir, "data.json")
-        with open(label_file, 'w', encoding='utf-8') as f:
-            json.dump(label_dataset, f, separators=(',', ':'))
+            min_x, max_x = np.min(x2d), np.max(x2d)
+            min_y, max_y = np.min(y2d), np.max(y2d)
+            size = max(max_x - min_x, max_y - min_y, 1e-6)
 
-        # Log progress
+            nx = (x2d - min_x) / size + np.random.normal(0, 0.005, 21)
+            ny = (y2d - min_y) / size + np.random.normal(0, 0.005, 21)
+
+            # Relativizar ao nó 0 (pulso)
+            w_x, w_y = nx[0], ny[0]
+            X_class[i, 0::2] = (nx - w_x).astype(np.float32)
+            X_class[i, 1::2] = (ny - w_y).astype(np.float32)
+
+        # Salva o arquivo comprimido no cache
+        npz_path = os.path.join(CACHE_DIR, f"{label}.npz")
+        np.savez_compressed(npz_path, X=X_class, label=label)
+
+        total_generated += SAMPLES_PER_STATE
+
         now = time.time()
         classes_done = idx + 1
-        should_log = (classes_done % LOG_INTERVAL_CLASSES == 0 or
-                      classes_done == total_seeds or
-                      (now - last_log_time) >= 5.0)
-
-        if should_log:
+        if (classes_done % LOG_INTERVAL == 0 or classes_done == total_seeds or (now - last_log_time) >= 5.0):
             elapsed = now - start_time
             pct = (classes_done / total_seeds) * 100.0
             rate = total_generated / max(elapsed, 0.001)
-
-            if classes_done < total_seeds:
-                eta_seconds = (elapsed / classes_done) * (total_seeds - classes_done)
-                eta_str = format_time(eta_seconds)
-            else:
-                eta_str = "0s"
-
-            print(f"\r[GERAÇÃO] {classes_done}/{total_seeds} classes "
-                  f"({pct:.1f}%) | "
-                  f"{total_generated:,} amostras | "
-                  f"{rate:,.0f} amostras/s | "
-                  f"Tempo: {format_time(elapsed)} | "
-                  f"ETA: {eta_str} | "
-                  f"Último: {label}",
+            eta_str = format_time((elapsed / classes_done) * (total_seeds - classes_done)) if classes_done < total_seeds else "0s"
+            print(f"\r[GERAÇÃO] {classes_done}/{total_seeds} classes ({pct:.1f}%) | "
+                  f"{total_generated:,} amostras | {rate:,.0f} amostras/s | "
+                  f"Tempo: {format_time(elapsed)} | ETA: {eta_str}",
                   end="", flush=True)
             last_log_time = now
 
     total_elapsed = time.time() - start_time
     print()
     logging.info("=" * 60)
-    logging.info("  GERAÇÃO CONCLUÍDA!")
+    logging.info("  GERAÇÃO MASSIVA CONCLUÍDA COM SUCESSO!")
     logging.info("=" * 60)
     logging.info(f"Classes processadas: {total_seeds}")
-    logging.info(f"Total de amostras geradas: {total_generated:,}")
+    logging.info(f"Total de amostras salvas: {total_generated:,}")
     logging.info(f"Tempo total: {format_time(total_elapsed)}")
-    logging.info(f"Velocidade média: {total_generated / max(total_elapsed, 0.001):,.0f} amostras/s")
-    logging.info(f"Datasets salvos em: {OUTPUT_DIR}")
+    logging.info(f"Diretório cache NPZ: {CACHE_DIR}")
+
 
 if __name__ == "__main__":
     main()

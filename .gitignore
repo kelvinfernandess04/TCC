@@ -14,6 +14,8 @@ Treinamento IA/datasets/
 # Cache de IA e Treinamento
 extraction_cache.json
 Treinamento IA/unified_cache/
+Treinamento IA/data/unified_cache/
+*.npz
 nao_usadas/**
 
 # ==================================

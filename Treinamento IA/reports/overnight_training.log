@@ -1,0 +1,18 @@
+[2026-09-08 01:43:55] [INFO] ======================================================================
+[2026-09-08 01:43:55] [INFO]   INÍCIO DO PIPELINE NOTURNO AUTOMATIZADO DE TREINAMENTO LIBRAS
+[2026-09-08 01:43:55] [INFO] ======================================================================
+[2026-09-08 01:43:55] [INFO] Diretório Base: C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA
+[2026-09-08 01:43:55] [INFO] Arquivo de Sementes: C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA\data\seeds\seeds.json
+[2026-09-08 01:43:55] [INFO] Arquivo de Log Persistente: C:\DevTools\Repositories\Faculdade\TCC\Treinamento IA\reports\overnight_training.log
+[2026-09-08 01:43:55] [INFO] ----------------------------------------------------------------------
+[2026-09-08 01:43:55] [INFO] ETAPA 1/2: GERAÇÃO MASSIVA DE DADOS SINTÉTICOS (SEEDS.JSON)
+[2026-09-08 01:43:55] [INFO] ----------------------------------------------------------------------
+[2026-09-08 01:43:55] [INFO] Total de classes cinemáticas esperadas: 2,568
+[2026-09-08 01:43:55] [INFO] Executando gerador sintético (Tentativa 1/3)...
+[2026-09-08 01:45:00] [INFO] Geração concluída em 65.7s. Validando arquivos gerados...
+[2026-09-08 01:45:01] [INFO] Classes validadas com sucesso no cache: 2,568 / 2,568
+[2026-09-08 01:45:01] [SUCCESS] ✓ ETAPA 1 VALIDADA: 100% das classes geradas com integridade!
+[2026-09-08 01:45:01] [INFO] ----------------------------------------------------------------------
+[2026-09-08 01:45:01] [INFO] ETAPA 2/2: TREINAMENTO DA NEURAL ENGINE (DEEP LEARNING)
+[2026-09-08 01:45:01] [INFO] ----------------------------------------------------------------------
+[2026-09-08 01:45:01] [INFO] Iniciando treino da Neural Engine (Tentativa 1/3)...

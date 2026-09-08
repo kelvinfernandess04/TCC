@@ -208,20 +208,9 @@ class HandKinematicsDirect:
             self.finger_lengths[fname] = (l1, l2, l3)
 
             # Direção unitária de abertura em leque no plano da palma (Z = 0)
-            v_open = (self.ref_pts[j[2]] - self.ref_pts[mcp_idx]).copy()
-            v_open[2] = 0.0  # projeta no plano frontal da palma
-            norm_open = np.linalg.norm(v_open)
-            if norm_open > 1e-4:
-                self.finger_spread_dirs_open[fname] = v_open / norm_open
-            else:
-                default_dirs = {
-                    'Index':  np.array([-0.06, -0.998, 0.0]),
-                    'Middle': np.array([0.00,  -1.000, 0.0]),
-                    'Ring':   np.array([0.15,  -0.988, 0.0]),
-                    'Pinky':  np.array([0.38,  -0.925, 0.0])
-                }
-                v_def = default_dirs.get(fname, self.ry.copy())
-                self.finger_spread_dirs_open[fname] = v_def / np.linalg.norm(v_def)
+            default_angles = {'Index': -26.0, 'Middle': 0.0, 'Ring': 20.0, 'Pinky': 40.0}
+            rad = math.radians(default_angles[fname])
+            self.finger_spread_dirs_open[fname] = np.array([math.sin(rad), -math.cos(rad), 0.0], dtype=np.float64)
 
             # Direção unitária de dedos juntos (estritamente paralela ao eixo longitudinal -Y)
             self.finger_spread_dirs_closed[fname] = self.ry.copy()
@@ -415,17 +404,41 @@ class HandKinematicsDirect:
         landmarks[13] = self.palm_base[4]  # Ring MCP (13)
         landmarks[17] = self.palm_base[5]  # Pinky MCP (17)
 
-        # 2. Dedos longos: Cinemática Direta pura com comprimentos rígidos da palma estendida
-        # e flexão estritamente no plano sagital para a frente (+Z)
-        fingers_data = [
-            ('Index',  d1, a1, 5,  [6, 7, 8]),
-            ('Middle', d2, 0,  9,  [10, 11, 12]),
-            ('Ring',   d3, a2, 13, [14, 15, 16]),
-            ('Pinky',  d4, a3, 17, [18, 19, 20])
-        ]
+        # 2. Dedos longos: Cinemática Direta pura com abdução anatômica fisiológica no plano da palma (Z = 0)
+        # e flexão estritamente no plano sagital (+Z)
+        # Baseado em Kapandji / Tubiana (limites de abertura ativa nas MCPs estendidas):
+        theta_idx = -26.0 if a1 == 0 else 0.0
 
-        for fname, st, sp, mcp_idx, joint_idxs in fingers_data:
-            u = self.finger_spread_dirs_open[fname] if sp == 0 else self.finger_spread_dirs_closed[fname]
+        # Médio: centro de simetria (0°).
+        # No sinal 'V' (a1==0 e a2==1), inclina +10° para ulnar, gerando um 'V' anatômico nítido de 36°.
+        # Se a1==1 e a2==0, inclina -5° para radial.
+        if a1 == 0 and a2 == 1:
+            theta_mid = 10.0
+        elif a1 == 1 and a2 == 0:
+            theta_mid = -5.0
+        else:
+            theta_mid = 0.0
+
+        theta_rng = 20.0 if a2 == 0 else 0.0
+        theta_pnk = 40.0 if a3 == 0 else theta_rng
+
+        spread_thetas = {
+            'Index':  theta_idx,
+            'Middle': theta_mid,
+            'Ring':   theta_rng,
+            'Pinky':  theta_pnk
+        }
+
+        for fname, st, mcp_idx, joint_idxs in [
+            ('Index',  d1, 5,  [6, 7, 8]),
+            ('Middle', d2, 9,  [10, 11, 12]),
+            ('Ring',   d3, 13, [14, 15, 16]),
+            ('Pinky',  d4, 17, [18, 19, 20])
+        ]:
+            th = spread_thetas[fname]
+            rad = math.radians(th)
+            u = np.array([math.sin(rad), -math.cos(rad), 0.0], dtype=np.float64)
+
             t1, t2, t3 = self.STAGE_ANGLES[st]
             a1_r = math.radians(t1)
             a2_r = math.radians(t1 + t2)

@@ -33,16 +33,24 @@ def format_time(seconds):
 
 def convert_json_to_npz():
     """
-    Converte cada data.json em um .npz compacto com X (N,42) e y_encoded (N,).
-    Processa arquivo por arquivo para nunca ter mais de 1 classe na RAM.
-    Pula arquivos já convertidos (incremental).
+    Verifica o cache .npz ou converte cada data.json em .npz compacto.
     Retorna a lista de labels encontradas.
     """
     os.makedirs(CACHE_DIR, exist_ok=True)
+    npz_files = sorted(glob.glob(os.path.join(CACHE_DIR, "*.npz")))
+    if len(npz_files) >= 2000:
+        logging.info(f"--- [FASE 1] Encontrados {len(npz_files):,} arquivos .npz prontos no cache ---")
+        labels_found = set()
+        for p in npz_files:
+            lbl = os.path.splitext(os.path.basename(p))[0].upper()
+            labels_found.add(lbl)
+        logging.info(f"Cache pronto: {len(labels_found)} classes prontas para carregamento.")
+        return sorted(labels_found)
+
     json_files = sorted(glob.glob(os.path.join(SYNTHETIC_JSON_DIR, "**", "*.json"), recursive=True))
 
     if not json_files:
-        logging.error("Nenhum arquivo sintético encontrado.")
+        logging.error("Nenhum arquivo sintético (.npz ou .json) encontrado.")
         return []
 
     total = len(json_files)
