@@ -9,11 +9,12 @@ Esta documentação descreve detalhadamente a arquitetura, lógica biomecânica,
 O projeto baseia-se em um pipeline biomecânico determinístico projetado para superar a limitação de ruído em profundidade (eixo Z) de câmeras monoculares 2D convencionais via MediaPipe Hands:
 
 1. **Calibração Guiada por Visão Dupla (`guided_hand_calibrator.py` & `guided_thumb_calibrator.py`)**: O usuário calibra diretamente pela webcam, recebendo instruções cirúrgicas na tela. Cada postura limite é gravada em dois ângulos consecutivos: **Frontal** (plano coronal XY) e **Lateral 90°** (plano sagital YZ), com detecção de estabilidade temporal (1.2s) e preservação estrita de comprimentos ósseos.
-2. **Referencial Canônico da Palma e Motor Cinemático Direto (`kinematic_seed_generator.py`)**: Transforma os dados em coordenadas ortonormais da palma onde o vetor normal $\hat{Z}$ aponta perpendicularmente para a frente do observador, garantindo que a flexão dos dedos ocorra sem nenhum desvio lateral ($\Delta X = 0$). Gera um catálogo purificado de **2.568 sementes anatômicas** na taxonomia DADADADAFP.
-3. **Auditoria Visual e Verificação 3D (`inspect_seeds.py` & `generate_seed_limit_visualizations.py`)**: Player com duplo viewport síncrono (Frontal Isométrico + Perfil Lateral 90°) e relatórios gráficos de alta resolução em `reports/seed_verification/`.
+2. **Referencial Canônico da Palma e Motor Cinemático Direto (`kinematic_seed_generator.py`)**: Transforma os dados em coordenadas ortonormais da palma onde o vetor normal $\hat{Z}$ aponta perpendicularmente para a frente do observador.
+3. **Poda Biomecânica Anatômica (*Juncturae Tendinum* Pruning - `prune_impossible_classes.py`)**: Elimina combinações articulares fisiologicamente inviáveis na mão humana (ex: dedo Anelar estendido em 0 associado a dedo Mínimo fechado plano contra a palma em 3 ou 4), podando 204 classes impossíveis e estabelecendo um espaço amostral de **2.364 classes anatômicas reais** e redefinindo sinais canônicos como 'W' (`1000000110`).
 4. **Data Augmentation Biomecânico (`synthetic_generator.py`)**: Expande as sementes em centenas de milhares de amostras simulando pontos de vista 3D em domo esférico com ruído gaussiano controlado de sensores.
-5. **Rede Neural Profunda (`neural_engine.py`)**: Constrói e treina uma Deep Neural Network (DNN) em Keras/TensorFlow e exporta o modelo final nos formatos `.h5` e `.tflite` para integração com o aplicativo mobile (`POC/`).
-6. **Sandbox em Tempo Real (`dynamic_sandbox.py`)**: Ambiente de validação via webcam para inferência ao vivo da rede neural.
+5. **Rede Neural Profunda (`neural_engine.py`)**: Constrói e treina uma Deep Neural Network (DNN) em Keras/TensorFlow e exporta o modelo final nos formatos `.h5` e `.tflite` para integração com o aplicativo mobile (`POC/`) e desktop. Acurácia de validação alcançada: **99.84%**.
+6. **Validador Desktop em Tempo Real (`validate_signs_live.py`)**: Validador com suporte a webcam, seleção interativa de alvos, exibição de gabarito visual PiP e motor de feedback biomecânico diferencial dedo a dedo.
+7. **Aplicativo Mobile POC (`POC/`)**: Desenvolvido em React Native e Expo SDK 57, permitindo prática guiada e modo sandbox em dispositivos móveis.
 
 ---
 
@@ -21,43 +22,43 @@ O projeto baseia-se em um pipeline biomecânico determinístico projetado para s
 
 ```
 TCC/
-├── POC/                                      # Aplicativo Mobile React Native / Expo (TCC)
+├── POC/                                      # Aplicativo Mobile React Native / Expo SDK 57 (TCC)
 │   ├── App.js
-│   ├── app.json
+│   ├── app.json                              # Manifesto e permissões Android/iOS
+│   ├── modelBase64.js                        # Modelo TFLite compilado em Base64
+│   ├── labels.js                             # Catálogo das 2.364 classes
+│   ├── referenceSeeds.js                     # Projeções 2D dos 21 pontos de referência
 │   ├── screens/                              # Telas: ExerciseScreen, SandboxScreen, TrailScreen
-│   └── utils/                                # Dicionários e mapeamentos de LIBRAS
+│   └── utils/                                # Motor biomecânico e dicionários
 │
 ├── Treinamento IA/                           # Núcleo de Inteligência Artificial e Biomecânica
 │   ├── data/
-│   │   ├── calibration_captures/             # Snapshots PNG anotados das calibrações (Frontal + Lateral)
-│   │   ├── calibration_settings.json         # Manifesto mestre de calibração (landmarks e comprimentos)
-│   │   └── seeds/
-│   │       └── seeds.json                    # Catálogo oficial das 2.568 sementes 3D DADADADAFP
+│   │   ├── calibration_captures/             # Snapshots PNG anotados das calibrações
+│   │   ├── calibration_settings.json         # Manifesto mestre de calibração
+│   │   ├── seeds/
+│   │   │   └── seeds.json                    # Catálogo oficial das 2.364 sementes 3D podadas
+│   │   └── unified_cache/                    # Cache compacto de 2.364 arquivos .npz
 │   │
 │   ├── models/                               # Modelos treinados e exportados
 │   │   ├── modelo_gestos.h5                  # Modelo Keras hierárquico
-│   │   ├── modelo_gestos.tflite              # Modelo compilado TensorFlow Lite (Mobile)
-│   │   └── labels.txt                        # Rótulos textuais das classes LIBRAS
+│   │   ├── modelo_gestos.tflite              # Modelo compilado TensorFlow Lite (1.9 MB, ~0.6ms)
+│   │   └── labels.txt                        # Rótulos das 2.364 classes LIBRAS
 │   │
 │   ├── reports/                              # Relatórios e documentações de auditoria
-│   │   ├── seed_verification/                # Painéis de validação visual gerados
-│   │   │   ├── 01_limitacoes_estagios_dedos.png
-│   │   │   ├── 02_limitacoes_polegar_F_P.png
-│   │   │   ├── 03_limitacoes_aberturas_spread.png
-│   │   │   └── 04_sementes_exemplos_libras.png
-│   │   └── relatorio_dataset.md
+│   │   ├── overnight_training.log            # Log persistente de treino por época
+│   │   └── training_report.json              # Métricas consolidadas do treinamento
 │   │
-│   └── scripts/                              # Scripts executáveis do pipeline de IA
-│       ├── dynamic_sandbox.py                # Sandbox de inferência em tempo real via webcam
-│       ├── generate_seed_limit_visualizations.py  # Gerador dos 4 relatórios gráficos de auditoria
-│       ├── guided_hand_calibrator.py         # Calibrador guiado interativo da mão completa (11 passos)
-│       ├── guided_thumb_calibrator.py        # Calibrador guiado especializado do polegar (3 passos)
-│       ├── inspect_seeds.py                  # Inspetor e player 3D de sementes (Dual-Viewport)
-│       ├── kinematic_seed_generator.py       # Motor cinemático direto canônico (gerador de seeds.json)
-│       ├── neural_engine.py                  # Treinamento da DNN, validação e compilação TFLite
-│       └── synthetic_generator.py            # Motor sintético biomecânico de data augmentation
-│
-├── scripts/                                  # Atalhos de execução a partir da raiz
+│   ├── scripts/                              # Scripts executáveis do pipeline de IA
+│   │   ├── prune_impossible_classes.py       # Poda cinesiológica de classes impossíveis
+│   │   ├── validate_signs_live.py            # Validador desktop interativo via webcam
+│   │   ├── kinematic_seed_generator.py       # Motor cinemático direto canônico
+│   │   ├── neural_engine.py                  # Treinamento da DNN, validação e compilação TFLite
+│   │   ├── synthetic_generator.py            # Motor sintético biomecânico
+│   │   └── update_poc.py                     # Sincronizador de modelos com o app mobile
+│   │
+│   ├── validar_sinais.bat                    # Atalho Windows duplo-clique para validação
+│   └── validar_sinais.ps1                    # Atalho PowerShell para validação
+```
 │   ├── guided_hand_calibrator.py             # Wrapper para o calibrador guiado da mão
 │   ├── guided_thumb_calibrator.py            # Wrapper para o calibrador guiado do polegar
 │   ├── inspect_seeds.py                      # Wrapper para o inspetor de sementes
@@ -104,7 +105,7 @@ $$\vec{P}_0 = \text{Landmark 0 (Pulso)}$$
 
 ---
 
-## 4. Taxonomia DADADADAFP Simplificada (2.568 Classes)
+## 4. Taxonomia DADADADAFP Simplificada (2.364 Classes Anatômicas)
 
 A classificação adota uma string padronizada de 10 dígitos, lida do Mindinho em direção ao Polegar:
 
@@ -133,14 +134,18 @@ $$\text{Código} = [D_4][A_3][D_3][A_2][D_2][A_1][D_1][A_0][F][P]$$
 - **Estado 1: Junto aos Dedos (`A0=1, F=0, P=0`)**: Polegar aduzido encostado ao lado do dedo indicador / palma.
 - **Estado 2: Na Transversal (`A0=1, F=1, P=0`)**: Polegar cruzando transversalmente a frente da palma em oposição.
 
-### 4.3 Poda Biomecânica
+### 4.3 Poda Biomecânica e Limitação Anatômica (*Juncturae Tendinum*)
 1. **IP Desconsiderado**: $P = 0$ obrigatório.
 2. **Coerência da Oposição**: $A_0 = 0$ e $F = 1$ é anatomicamente impossível (não se pode estar em abdução máxima e na transversal ao mesmo tempo).
 3. **Indicador Fechado**: Quando $D_1 \ge 2$, o polegar não pode estar aberto esticado ($A_0 = 1$ forçado).
 4. **Travamento de Abertura em Flexão**: Dedos dobrados ($D \ge 2$) não realizam abdução colateral ($A = 1$ forçado).
-5. **Juncturae Tendinum**: O anelar não pode estar estendido quando médio e mínimo estão cerrados em punho.
+5. **Restrição Fisiológica do Anelar (*Juncturae Tendinum*)**:
+   - Devido às bandas tendíneas interdigitais que interconectam os tendões extensores dos dedos, quando o dedo Anelar está estendido ($D_3 = 0$), o dedo Mínimo é tracionado e **não consegue fechar completamente plano contra a palma** ($D_4 = 3$ ou $D_4 = 4$).
+   - A poda anatômica eliminou **204 classes inviáveis** ($D_3 = 0$ e $D_4 \ge 3$).
+   - O sinal canônico da letra 'W' foi corrigido para `1000000110` (Mínimo em estágio 1/curvado natural), com tolerância biomecânica permitindo estágios 1 e 2 sem gerar penalidades.
+   - Assimetria anatômica respeitada: quando o Mínimo está estendido ($D_4 = 0$), o Anelar **pode** ser fechado ($D_3 = 4$) com o auxílio do polegar travando as falanges, como nos sinais canônicos 'I' (`0141414110`) e 'Y' (`0041414100`).
 
-Total de classes resultantes: **2.568 sementes válidas**.
+Total de classes resultantes no dataset: **2.364 sementes anatômicas válidas**.
 
 ---
 
@@ -159,75 +164,77 @@ Total de classes resultantes: **2.568 sementes válidas**.
   2. `thumb_closed`: Polegar aduzido colado ao indicador com dedos fechados.
   3. `thumb_transversal`: Polegar em oposição transversal cruzando a palma.
 - **Preservação Rígida de Comprimentos Ósseos**: Extrai os comprimentos $L_1, L_2, L_3$ da captura `baseline_open` e projeta os vetores de rotação reais mantendo rigorosamente constantes as distâncias inter-articulares.
-- **Sincronização com o Pipeline**: Atualiza `calibration_settings.json` na chave `thumb_extracted` e dispara imediatamente a regeneração de `seeds.json` e dos relatórios visuais.
+- **Sincronização com o Pipeline**: Atualiza `calibration_settings.json` na chave `thumb_extracted` e dispara imediatamente a regeneração de `seeds.json`.
 
-### 5.3 `kinematic_seed_generator.py`
+### 5.3 `prune_impossible_classes.py`
+- **Função**: Filtro biomecânico estrito que aplica a poda anatômica baseada nas *Juncturae Tendinum*.
+- **Ação**: Lê `seeds.json`, elimina as 204 classes onde $D_3 = 0$ e $D_4 \ge 3$, regrava o arquivo limpo com 2.364 classes e remove do diretório `unified_cache/` os arquivos `.npz` órfãos.
+
+### 5.4 `kinematic_seed_generator.py`
 - **Função**: Motor de Cinemática Direta Canônica (`HandKinematicsDirect`).
-- **Estrutura**: Transforma as bases da palma para o referencial ortonormal canônico, monta os dedos longos com flexão sagital pura e os polegares calibrados, filtra as poses contra as regras de poda biomecânica e exporta as 2.568 sementes para `data/seeds/seeds.json`.
+- **Estrutura**: Transforma as bases da palma para o referencial ortonormal canônico, monta os dedos longos com flexão sagital pura e os polegares calibrados, exportando as sementes oficiais para `data/seeds/seeds.json`.
 
-### 5.4 `inspect_seeds.py`
-- **Função**: Player interativo e auditor sequencial 3D de sementes.
-- **Interface**: Janela OpenCV com tipografia Pillow Unicode, apresentando dois viewports 3D simultâneos:
-  - **Visão 1**: Frontal / Isométrica (Yaw 15°, Pitch -12°).
-  - **Visão 2**: Perfil Lateral 90° (Yaw 90°, Pitch -5°).
-- **Atalhos**: `[ESPAÇO]` (Play/Pause), `[A]/[D]` (Navegar sementes), `[1]-[5]` (Filtrar estágios de flexão), `[L]` (Alternar entre sinais LIBRAS: A, B, C, D, I, L, V, W).
-
-### 5.5 `generate_seed_limit_visualizations.py`
-- **Função**: Geração automática de painéis de auditoria gráfica em alta resolução.
-- **Saídas em `reports/seed_verification/`**:
-  - `01_limitacoes_estagios_dedos.png`: Sequência dos 5 estágios (0 a 4) dos dedos longos.
-  - `02_limitacoes_polegar_F_P.png`: Estados fundamentais do polegar.
-  - `03_limitacoes_aberturas_spread.png`: Comparativo de leque aberto vs. dedos colados.
-  - `04_sementes_exemplos_libras.png`: Poses representativas de sinais LIBRAS (A, I, V, W).
-
-### 5.6 `synthetic_generator.py`
+### 5.5 `synthetic_generator.py`
 - **Função**: Motor biomecânico gerador de dataset massivo sintético.
-- **Operação**: Aplica rotações espaciais 3D em domo esférico sobre cada uma das 2.568 sementes, simulando múltiplos pontos de vista de câmeras reais e adicionando ruído gaussiano calibrado.
+- **Operação**: Aplica rotações espaciais 3D em domo esférico sobre cada uma das 2.364 sementes, simulando múltiplos pontos de vista de câmeras reais e adicionando ruído gaussiano calibrado em cada articulação para robustez.
 
-### 5.7 `neural_engine.py`
+### 5.6 `neural_engine.py`
 - **Função**: Pipeline de Deep Learning para treinamento e deploy.
-- **Arquitetura**: DNN Sequencial com camadas densas (512 -> 256 -> 128 neurônios), ativações ReLU, normalização em lote (`BatchNormalization`), `Dropout(0.2)` e classificação final via `Softmax` sobre as 2.568 classes.
-- **Deploy**: Exporta `modelo_gestos.h5` e realiza a compilação otimizada para `modelo_gestos.tflite` com metadados para mobile.
+- **Arquitetura**: DNN Sequencial com camadas densas (512 -> 256 -> 128 neurônios), ativações ReLU, normalização em lote (`BatchNormalization`), `Dropout(0.2)` e classificação final via `Softmax` sobre as 2.364 classes.
+- **Acurácia e Performance**: Acurácia de validação atingida de **99.84%** (val_loss: 0.0050, checkpoint restaurado da época 64).
+- **Deploy**: Exporta `modelo_gestos.h5` e realiza a compilação otimizada para `modelo_gestos.tflite` (1.9 MB, ~0.6ms de latência de inferência).
 
-### 5.8 `dynamic_sandbox.py`
-- **Função**: Ambiente interativo para teste do modelo treinado com webcam ao vivo.
-- **Operação**: Processa o fluxo de vídeo via MediaPipe Hands, normaliza espacialmente as coordenadas em relação ao pulso e envia o tensor de entrada para a rede neural, exibindo a previsão DADADADAFP e o sinal LIBRAS correspondente em tempo real.
+### 5.7 `update_poc.py`
+- **Função**: Sincronizador automatizado entre o ambiente de IA e o aplicativo mobile (`POC/`).
+- **Ação**: Converte `modelo_gestos.tflite` para string Base64 em `POC/modelBase64.js`, extrai as 2.364 classes para `POC/labels.js` e gera as coordenadas 2D normalizadas em `POC/referenceSeeds.js` para renderização visual do esqueleto-guia na tela.
+
+### 5.8 `validate_signs_live.py` (Novo Validador Desktop)
+- **Função**: Ferramenta de validação interativa em tempo real com webcam, permitindo testar diretamente a eficácia do treinamento e o feedback biomecânico dedo a dedo.
+- **Recursos**:
+  - Exibição de gabarito visual (PiP - Picture in Picture) com o esqueleto canônico da classe esperada.
+  - Reconhecimento com inferência direta via TensorFlow Lite.
+  - Motor de feedback biomecânico diferencial: aponta com exatidão se o dedo está muito dobrado, muito esticado ou na postura ideal.
+  - Seleção interativa por teclado (`[N]` próxima letra, `[P]` letra anterior, `[L]` alternar letra/código, `[C]` digitar código livre).
 
 ---
 
 ## 6. Como Operar o Sistema
 
-### 1. Calibração da Mão
-Inicie o assistente completo executando:
+### 1. Validação Rápida de Sinais LIBRAS (Recomendado)
+Para testar os sinais com a webcam e receber feedback biomecânico em tempo real:
+```powershell
+cd "Treinamento IA"
+.\validar_sinais.ps1 --letra W
+# ou
+python scripts/validate_signs_live.py --letra W
+# ou dê duplo clique em: Treinamento IA/validar_sinais.bat
+```
+
+### 2. Calibração da Mão Completa
 ```powershell
 python scripts/guided_hand_calibrator.py
 # ou duplo clique em: executar_calibrador.bat
 ```
 
-### 2. Calibração Especializada do Polegar
-Para calibrar especificamente os 3 estados do polegar com instruções em tela:
+### 3. Calibração do Polegar
 ```powershell
 python scripts/guided_thumb_calibrator.py
 # ou duplo clique em: executar_calibrador_polegar.bat
 ```
 
-### 3. Geração Manual de Sementes
+### 4. Poda Anatômica e Sincronização
 ```powershell
-python scripts/kinematic_seed_generator.py
+python "Treinamento IA/scripts/prune_impossible_classes.py"
 ```
 
-### 4. Auditoria e Inspeção das Sementes 3D
+### 5. Treinamento da Rede Neural e Atualização da POC Mobile
 ```powershell
-python scripts/inspect_seeds.py
-```
-
-### 5. Geração de Dataset Sintético e Treinamento da IA
-```powershell
-python "Treinamento IA/scripts/synthetic_generator.py"
 python "Treinamento IA/scripts/neural_engine.py"
+python "Treinamento IA/scripts/update_poc.py"
 ```
 
-### 6. Teste ao Vivo na Webcam
+### 6. Execução do App Mobile POC (React Native)
 ```powershell
-python "Treinamento IA/scripts/dynamic_sandbox.py"
+cd POC
+npx expo start --clear
 ```

@@ -23,7 +23,7 @@ export const LETTER_KINEMATICS = {
   'S': { code: '4141414110', name: "Sinal 'S'", description: "Punho cerrado com polegar cruzando a frente dos dedos" },
   'U': { code: '4141010110', name: "Sinal 'U'", description: "Indicador e médio estendidos retos e bem juntos" },
   'V': { code: '4141000110', name: "Sinal 'V'", description: "Indicador e médio estendidos e abertos em 'V'" },
-  'W': { code: '4100000110', name: "Sinal 'W'", description: "Indicador, médio e anelar estendidos e abertos em 'W'" },
+  'W': { code: '1000000110', name: "Sinal 'W'", description: "Indicador, médio e anelar estendidos em 'W', mindinho apoiado" },
   'X': { code: '4141412110', name: "Sinal 'X'", description: "Indicador em gancho (dobrado na ponta), outros fechados" },
   'Y': { code: '0041414100', name: "Sinal 'Y'", description: "Polegar e mindinho estendidos abertos, dedos do meio fechados" }
 };
@@ -221,7 +221,12 @@ export function getBiomechanicalGuidance(detectedInput, expectedInput) {
   }
 
   // 4. ANÁLISE DO DEDO MÍNIMO (MINDINHO)
-  if (expected.pinky.stage !== detected.pinky.stage) {
+  // Tolerância anatômica: quando Anelar, Médio e Indicador estão estendidos (como no sinal W),
+  // o mindinho não fecha a 100% por tração tendínea (juncturae tendinum). Estágios 1 e 2 são válidos.
+  const isWPosture = expected.ring.isExtended && expected.middle.isExtended && expected.index.isExtended;
+  if (isWPosture && (detected.pinky.stage === 1 || detected.pinky.stage === 2) && (expected.pinky.stage === 1 || expected.pinky.stage === 2)) {
+    // Tolerância anatômica confirmada
+  } else if (expected.pinky.stage !== detected.pinky.stage) {
     totalDiffs++;
     if (expected.pinky.isExtended && !detected.pinky.isExtended) {
       hints.push('🤙 Estique o dedo Mindinho para cima.');
@@ -258,11 +263,11 @@ export function getBiomechanicalGuidance(detectedInput, expectedInput) {
   if (expected.index.isExtended && expected.middle.isExtended) {
     if (expMedIndSpread.startsWith('Aberto') && detMedIndSpread.startsWith('Junto')) {
       hints.push('✌️ Separe/abra o Indicador e o Médio (em formato de V).');
-      fingerStatus.spread = 'ERR_SPREAD_OPEN';
+      fingerStatus.spread = 'ERR_NEED_OPEN';
       totalDiffs++;
     } else if (expMedIndSpread.startsWith('Junto') && detMedIndSpread.startsWith('Aberto')) {
-      hints.push('🤝 Mantenha o Indicador e o Médio bem juntinhos.');
-      fingerStatus.spread = 'ERR_SPREAD_CLOSE';
+      hints.push('🤞 Junte o Indicador e o Médio bem colados.');
+      fingerStatus.spread = 'ERR_NEED_CLOSE';
       totalDiffs++;
     }
   }
@@ -286,3 +291,22 @@ export function getBiomechanicalGuidance(detectedInput, expectedInput) {
     fingerStatus
   };
 }
+
+export const POPULAR_CLASSES = [
+  { code: '4141000110', letter: 'V', name: '4141000110 (Letra V)', desc: 'Indicador e Médio abertos em V' },
+  { code: '4141010110', letter: 'U', name: '4141010110 (Letra U/R)', desc: 'Indicador e Médio estendidos juntos' },
+  { code: '0101010110', letter: 'B', name: '0101010110 (Letra B)', desc: '4 dedos erguidos juntos' },
+  { code: '4141414110', letter: 'A', name: '4141414110 (Letra A/S)', desc: 'Punho fechado com polegar' },
+  { code: '4141410000', letter: 'L', name: '4141410000 (Letra L)', desc: 'Indicador e polegar abertos em 90°' },
+  { code: '4141410110', letter: 'D', name: '4141410110 (Letra D)', desc: 'Indicador erguido, outros fechados' },
+  { code: '0141414110', letter: 'I', name: '0141414110 (Letra I)', desc: 'Mindinho erguido, outros fechados' },
+  { code: '1010101000', letter: 'C', name: '1010101000 (Letra C)', desc: 'Dedos em concha / arco C' },
+  { code: '2121212110', letter: 'E', name: '2121212110 (Letra E)', desc: 'Dedos em garra recolhida' },
+  { code: '3131314110', letter: 'M', name: '3131314110 (Letra M)', desc: '3 dedos dobrados sobre polegar' },
+  { code: '4131314110', letter: 'N', name: '4131314110 (Letra N)', desc: '2 dedos dobrados sobre polegar' },
+  { code: '1010101010', letter: 'O', name: '1010101010 (Letra O)', desc: 'Dedos em círculo com polegar' },
+  { code: '1000000110', letter: 'W', name: '1000000110 (Letra W)', desc: '3 dedos estendidos em W, mindinho apoiado' },
+  { code: '4141412110', letter: 'X', name: '4141412110 (Letra X)', desc: 'Indicador em gancho' },
+  { code: '0041414100', letter: 'Y', name: '0041414100 (Letra Y)', desc: 'Polegar e mindinho abertos' },
+  { code: '0000000000', letter: null, name: '0000000000 (Mão Aberta)', desc: 'Todos os dedos abertos em leque' }
+];

@@ -7,7 +7,7 @@ Este documento orienta como configurar o ambiente, clonar o projeto e executar o
 ## 1. Contexto e Status Atual do Desenvolvimento
 
 ### 1.1. Reformulação Biomecânica das Sementes (`seeds.json`)
-* As 2.568 sementes cinemáticas canônicas foram atualizadas em [seeds.json](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/data/seeds/seeds.json) com amplitudes fisiológicas reais de **abdução e adução** (com base na literatura anatômica de Kapandji e Tubiana).
+* As 2.364 sementes cinemáticas canônicas em [seeds.json](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/data/seeds/seeds.json) contam com amplitudes fisiológicas reais de **abdução e adução** (com base na literatura anatômica de Kapandji e Tubiana) e poda das combinações anatomicamente inviáveis (*juncturae tendinum*).
 * Agora há separação nítida no espaço 3D entre posturas com dedos fechados e abertos:
   * Indicador (D1): até $-26.0^\circ$ de abertura radial.
   * Médio (D2): até $+10.0^\circ$ de abertura ulnar em sinais como "V".
@@ -17,8 +17,8 @@ Este documento orienta como configurar o ambiente, clonar o projeto e executar o
 
 ### 1.2. Pipeline Automatizado de 2 Etapas
 O script orquestrador [Treinamento IA/scripts/run_overnight_pipeline.py](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/scripts/run_overnight_pipeline.py) executa em sequência:
-1. **Etapa 1 (Geração Massiva)**: O gerador [synthetic_generator.py](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/scripts/synthetic_generator.py) lê diretamente as sementes e cria 500 amostras sintéticas com variações de rotação 3D e ruído de sensor por classe, salvando arquivos `.npz` de cache unificado em `Treinamento IA/data/unified_cache/` (1.284.000 amostras base em ~60 segundos).
-2. **Etapa 2 (Treinamento Neural Engine)**: O motor [neural_engine.py](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/scripts/neural_engine.py) carrega o cache, aplica espelhamento horizontal (2.568.000 amostras no total), treina a DNN Keras por até 150 épocas (com EarlyStopping e redução de Learning Rate), compila o modelo em `.h5` e `.tflite`, e aciona [update_poc.py](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/scripts/update_poc.py) para atualizar a POC mobile com o novo modelo em Base64.
+1. **Etapa 1 (Geração Massiva)**: O gerador [synthetic_generator.py](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/scripts/synthetic_generator.py) lê diretamente as sementes e cria 500 amostras sintéticas com variações de rotação 3D e ruído de sensor por classe, salvando arquivos `.npz` de cache unificado em `Treinamento IA/data/unified_cache/` (1.182.000 amostras base).
+2. **Etapa 2 (Treinamento Neural Engine)**: O motor [neural_engine.py](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/scripts/neural_engine.py) carrega o cache, aplica espelhamento horizontal (2.186.700 amostras válidas no total), treina a DNN Keras por até 150 épocas (com EarlyStopping e redução de Learning Rate), compila o modelo em `.h5` e `.tflite`, e aciona [update_poc.py](file:///c:/DevTools/Repositories/Faculdade/TCC/Treinamento%20IA/scripts/update_poc.py) para atualizar a POC mobile com o novo modelo em Base64.
 
 ---
 

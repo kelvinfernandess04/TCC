@@ -1,52 +1,165 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { modelBase64 } from './modelBase64';
 import { labels } from './labels';
-import { calibratedSeeds } from './seedsCalibradas';
 
-export default function VisionProcessor({ facingMode, onHandsDetected }) {
-    
-    // Injectable HTML containing the entire AI processing engine
+export default function VisionProcessor({ 
+    facingMode = 'environment', 
+    targetPoints = null, 
+    targetLabel = '', 
+    onHandsDetected 
+}) {
+    const webViewRef = useRef(null);
+
+    // Sincroniza o esqueleto do modelo alvo com o WebView em tempo real
+    useEffect(() => {
+        if (webViewRef.current) {
+            const payload = JSON.stringify({ points: targetPoints, label: targetLabel });
+            webViewRef.current.injectJavaScript(`
+                if (window.updateTarget) {
+                    window.updateTarget(${payload});
+                }
+                true;
+            `);
+        }
+    }, [targetPoints, targetLabel]);
+
+    // Limpeza de recursos da câmera ao desmontar
+    useEffect(() => {
+        return () => {
+            if (webViewRef.current) {
+                webViewRef.current.injectJavaScript(`
+                    if (window.stopCamera) {
+                        window.stopCamera();
+                    }
+                    true;
+                `);
+            }
+        };
+    }, []);
+
+    const isUserFacing = facingMode === 'user';
+
     const htmlContent = `
     <!DOCTYPE html>
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0"/>
         <style>
-            body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
-            video { 
-                width: 100%; height: 100%; 
-                object-fit: cover; 
-                position: absolute; top: 0; left: 0; z-index: 1;
-                transform: ${facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)'}; 
+            * { box-sizing: border-box; }
+            body, html { 
+                margin: 0; 
+                padding: 0; 
+                width: 100%; 
+                height: 100%; 
+                background: #000; 
+                overflow: hidden; 
             }
-            canvas { 
-                width: 100%; height: 100%; 
-                position: absolute; top: 0; left: 0; z-index: 2; pointer-events: none;
-                transform: ${facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)'};
+            #video {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                z-index: 1;
+                background: #000;
+            }
+            #video.mirrored {
+                transform: scaleX(-1);
+                -webkit-transform: scaleX(-1);
+            }
+            #canvas {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 2;
+                pointer-events: none;
+                background: transparent;
+            }
+            #status-pill {
+                position: absolute;
+                top: 14px;
+                left: 14px;
+                z-index: 10;
+                background: rgba(15, 23, 26, 0.88);
+                border: 1px solid #23343A;
+                color: #00E5FF;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.3px;
+                padding: 5px 12px;
+                border-radius: 20px;
+                pointer-events: none;
+                transition: all 0.3s ease;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            }
+            #status-pill.error {
+                border-color: #FF5252;
+                color: #FF5252;
+                background: rgba(40, 10, 10, 0.9);
+            }
+            #status-pill.success {
+                border-color: #00FF80;
+                color: #00FF80;
             }
         </style>
-        <!-- TensorFlow.js Core & TFLite -->
-        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
-        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
-        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.9/dist/tf-tflite.min.js"></script>
+        <!-- MediaPipe Hands -->
+        <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
         
-        <!-- MediaPipe Holistic -->
-        <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js"></script>
+        <!-- TensorFlow.js Core & TFLite -->
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core" crossorigin="anonymous"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl" crossorigin="anonymous"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.9/dist/tf-tflite.min.js" crossorigin="anonymous"></script>
     </head>
     <body>
-        <video id="video" autoplay playsinline muted></video>
+        <video id="video" autoplay playsinline webkit-playsinline muted class="${isUserFacing ? 'mirrored' : ''}"></video>
         <canvas id="canvas"></canvas>
+        <div id="status-pill">Iniciando câmera...</div>
+
         <script>
             const video = document.getElementById('video');
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
+            const statusPill = document.getElementById('status-pill');
             
-            let holistic;
-            let tfliteModel;
+            let hands;
+            let tfliteModel = null;
             const classLabels = ${JSON.stringify(labels)};
-            const calibratedSeedsData = ${JSON.stringify(calibratedSeeds)};
             let lastInferenceTime = Date.now();
+            const isUserCamera = ${isUserFacing};
+
+            window.currentTarget = { points: ${JSON.stringify(targetPoints)}, label: "${targetLabel}" };
+
+            function setStatus(msg, type) {
+                if (statusPill) {
+                    statusPill.innerText = msg;
+                    statusPill.className = type === 'error' ? 'error' : (type === 'success' ? 'success' : '');
+                }
+                if (window.ReactNativeWebView) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: type === 'error' ? 'error' : 'status',
+                        message: msg
+                    }));
+                }
+            }
+
+            window.updateTarget = function(data) {
+                window.currentTarget = data || { points: null, label: '' };
+            };
+
+            window.stopCamera = function() {
+                if (video && video.srcObject) {
+                    video.srcObject.getTracks().forEach(t => t.stop());
+                    video.srcObject = null;
+                }
+            };
+            window.addEventListener('beforeunload', window.stopCamera);
 
             const HAND_CONNECTIONS = [
                 [0,1],[1,2],[2,3],[3,4],
@@ -56,296 +169,191 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
                 [13,17],[17,18],[18,19],[19,20],
                 [0,17]
             ];
-            
-            function base64ToArrayBuffer(base64) {
-                var binary_string = window.atob(base64);
-                var len = binary_string.length;
-                var bytes = new Uint8Array(len);
-                for (var i = 0; i < len; i++) {
-                    bytes[i] = binary_string.charCodeAt(i);
-                }
-                return bytes.buffer;
-            }
 
-            async function init() {
-                try {
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Acessando câmera...' }));
-                    
-                    const stream = await navigator.mediaDevices.getUserMedia({
-                        video: { facingMode: '${facingMode}' }
-                    });
-                    video.srcObject = stream;
-                    
-                    await new Promise((resolve) => {
-                        video.onloadedmetadata = () => {
-                            video.play();
-                            canvas.width = window.innerWidth;
-                            canvas.height = window.innerHeight;
-                            window.addEventListener('resize', () => {
-                                canvas.width = window.innerWidth;
-                                canvas.height = window.innerHeight;
-                            });
-                            resolve();
-                        };
-                    });
+            // Mapeamento geométrico das coordenadas normalizadas do MediaPipe (0..1)
+            // para as dimensões reais renderizadas pelo 'object-fit: cover' do vídeo
+            function mapLandmark(p) {
+                const screenW = canvas.width;
+                const screenH = canvas.height;
+                const videoW = video.videoWidth || 640;
+                const videoH = video.videoHeight || 480;
 
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Carregando Modelos de IA...' }));
+                const screenRatio = screenW / screenH;
+                const videoRatio = videoW / videoH;
 
-                    tflite.setWasmPath('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.9/dist/');
-                    const modelBuffer = base64ToArrayBuffer("${modelBase64}");
-                    tfliteModel = await tflite.loadTFLiteModel(modelBuffer);
-
-                    holistic = new Holistic({locateFile: (file) => {
-                        return "https://cdn.jsdelivr.net/npm/@mediapipe/holistic/" + file;
-                    }});
-
-                    holistic.setOptions({
-                        modelComplexity: 1,
-                        smoothLandmarks: true,
-                        minDetectionConfidence: 0.5,
-                        minTrackingConfidence: 0.5
-                    });
-
-                    holistic.onResults(onResults);
-
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Modelos Prontos.' }));
-                    
-                    async function processVideo() {
-                        await holistic.send({image: video});
-                        requestAnimationFrame(processVideo);
-                    }
-                    processVideo();
-
-                } catch(e) {
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error', message: e.message }));
-                }
-            }
-
-            // Agente 2: Normalização Espacial Abstrata 3D (Pulso na Origem, Escala e Invariância Angular)
-            function normalizeLandmarks3D(landmarks) {
-                const wrist = landmarks[0];
-                const ptsTrans = [];
-                for (let i = 0; i < 21; i++) {
-                    ptsTrans.push({
-                        x: landmarks[i].x - wrist.x,
-                        y: landmarks[i].y - wrist.y,
-                        z: (landmarks[i].z || 0.0) - (wrist.z || 0.0)
-                    });
+                let renderW, renderH, offsetX, offsetY;
+                if (screenRatio > videoRatio) {
+                    renderW = screenW;
+                    renderH = screenW / videoRatio;
+                    offsetX = 0;
+                    offsetY = (screenH - renderH) / 2;
+                } else {
+                    renderH = screenH;
+                    renderW = screenH * videoRatio;
+                    offsetX = (screenW - renderW) / 2;
+                    offsetY = 0;
                 }
 
-                // Escala invariante: Distância Pulso(0) -> Base MCP Dedo Médio(9)
-                const p9 = ptsTrans[9];
-                const scale = Math.sqrt(p9.x * p9.x + p9.y * p9.y + p9.z * p9.z) || 1.0;
-                const ptsScaled = ptsTrans.map(p => ({
-                    x: p.x / scale,
-                    y: p.y / scale,
-                    z: p.z / scale
-                }));
-
-                // Base Ortonormal Local da Palma (Invariância Total a Rotação Global do Pulso)
-                const uy = { x: ptsScaled[9].x, y: ptsScaled[9].y, z: ptsScaled[9].z };
-                const normUy = Math.sqrt(uy.x*uy.x + uy.y*uy.y + uy.z*uy.z) || 1.0;
-                uy.x /= normUy; uy.y /= normUy; uy.z /= normUy;
-
-                const vArch = {
-                    x: ptsScaled[5].x - ptsScaled[17].x,
-                    y: ptsScaled[5].y - ptsScaled[17].y,
-                    z: ptsScaled[5].z - ptsScaled[17].z
-                };
-
-                let uz = {
-                    x: vArch.y * uy.z - vArch.z * uy.y,
-                    y: vArch.z * uy.x - vArch.x * uy.z,
-                    z: vArch.x * uy.y - vArch.y * uy.x
-                };
-                const normUz = Math.sqrt(uz.x*uz.x + uz.y*uz.y + uz.z*uz.z) || 1.0;
-                uz.x /= normUz; uz.y /= normUz; uz.z /= normUz;
-
-                let ux = {
-                    x: uy.y * uz.z - uy.z * uz.y,
-                    y: uy.z * uz.x - uy.x * uz.z,
-                    z: uy.x * uz.y - uy.y * uz.x
-                };
-                const normUx = Math.sqrt(ux.x*ux.x + ux.y*ux.y + ux.z*ux.z) || 1.0;
-                ux.x /= normUx; ux.y /= normUx; ux.z /= normUx;
-
-                const ptsLocal = [];
-                for (let i = 0; i < 21; i++) {
-                    const p = ptsScaled[i];
-                    ptsLocal.push({
-                        x: p.x * ux.x + p.y * ux.y + p.z * ux.z,
-                        y: p.x * uy.x + p.y * uy.y + p.z * uy.z,
-                        z: p.x * uz.x + p.y * uz.y + p.z * uz.z
-                    });
-                }
-
-                return { ptsLocal, scale };
-            }
-
-            // Agente 4: Classificador em Tempo Real por Seeds Calibradas e Matriz de Tolerância
-            function classifyHandWithSeeds(landmarks) {
-                if (!calibratedSeedsData || !calibratedSeedsData.classes) return null;
-
-                const { ptsLocal } = normalizeLandmarks3D(landmarks);
-
-                let bestClass = 'DESCONHECIDO';
-                let bestSeedName = '';
-                let minDistance = Infinity;
-                let bestTolerancePassed = false;
-
-                const classes = calibratedSeedsData.classes;
-                for (const clsName in classes) {
-                    const clsInfo = classes[clsName];
-                    const weights = clsInfo.discriminative_joint_weights || [];
-                    const weightSum = weights.reduce((a, b) => a + b, 0) || 21.0;
-
-                    for (const subName in clsInfo.sub_seeds) {
-                        const seed = clsInfo.sub_seeds[subName];
-                        const seedLms = seed.landmarks_3d;
-                        const thresholds = (seed.tolerance_matrix && seed.tolerance_matrix.joint_thresholds) || [];
-
-                        let weightedSumSq = 0;
-                        let passedCount = 0;
-
-                        for (let i = 0; i < 21; i++) {
-                            const dx = ptsLocal[i].x - seedLms[i].x;
-                            const dy = ptsLocal[i].y - seedLms[i].y;
-                            const dz = ptsLocal[i].z - seedLms[i].z;
-                            const distSq = dx*dx + dy*dy + dz*dz;
-                            const w = (weights[i] !== undefined) ? weights[i] : 1.0;
-                            weightedSumSq += w * distSq;
-
-                            if (thresholds[i] !== undefined && Math.sqrt(distSq) <= thresholds[i]) {
-                                passedCount++;
-                            }
-                        }
-
-                        const weightedEuc = Math.sqrt(weightedSumSq / weightSum);
-
-                        if (weightedEuc < minDistance) {
-                            minDistance = weightedEuc;
-                            bestClass = clsName;
-                            bestSeedName = subName;
-                            bestTolerancePassed = (passedCount >= 17);
-                        }
-                    }
-                }
-
-                const confidence = Math.max(0.0, Math.min(1.0, 1.0 / (1.0 + minDistance * 2.8)));
-                const cleanLabel = bestClass.replace(/^classe_/, '');
-
+                const rx = isUserCamera ? (1 - p.x) : p.x;
                 return {
-                    class: bestClass,
-                    label: cleanLabel,
-                    seed: bestSeedName,
-                    confidence: confidence,
-                    tolerancePassed: bestTolerancePassed,
-                    distance: minDistance
+                    x: offsetX + rx * renderW,
+                    y: offsetY + p.y * renderH
                 };
             }
 
-            // Normalização 2D legada mantida para compatibilidade
-            function normalizeLandmarks(landmarks) {
-                let minX = Infinity, maxX = -Infinity;
-                let minY = Infinity, maxY = -Infinity;
-                for (let i = 0; i < 21; i++) {
-                    minX = Math.min(minX, landmarks[i].x);
-                    maxX = Math.max(maxX, landmarks[i].x);
-                    minY = Math.min(minY, landmarks[i].y);
-                    maxY = Math.max(maxY, landmarks[i].y);
-                }
-                const width = Math.max(maxX - minX, 1e-6);
-                const height = Math.max(maxY - minY, 1e-6);
-                const size = Math.max(width, height);
-                const norm = [];
-                for (let i = 0; i < 21; i++) {
-                    norm.push((landmarks[i].x - minX) / size);
-                    norm.push((landmarks[i].y - minY) / size);
-                }
-                return norm;
-            }
+            // Renderiza o esqueleto real da mão diretamente sobre a imagem da câmera
+            function drawRealHand(landmarks) {
+                ctx.strokeStyle = '#00FF80';
+                ctx.lineWidth = 4;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
 
-            function getScaledCoords(landmark) {
-                const vw = video.videoWidth;
-                const vh = video.videoHeight;
-                const cw = canvas.width;
-                const ch = canvas.height;
-                const scale = Math.max(cw / vw, ch / vh);
-                const scaledW = vw * scale;
-                const scaledH = vh * scale;
-                const offsetX = (cw - scaledW) / 2;
-                const offsetY = (ch - scaledH) / 2;
-                return {
-                    x: (landmark.x * scaledW) + offsetX,
-                    y: (landmark.y * scaledH) + offsetY
-                };
-            }
-
-            function drawHand(landmarks) {
-                ctx.strokeStyle = '#00FF00';
-                ctx.lineWidth = 3;
                 for (const [start, end] of HAND_CONNECTIONS) {
-                    const p1 = getScaledCoords(landmarks[start]);
-                    const p2 = getScaledCoords(landmarks[end]);
+                    const p1 = mapLandmark(landmarks[start]);
+                    const p2 = mapLandmark(landmarks[end]);
                     ctx.beginPath();
                     ctx.moveTo(p1.x, p1.y);
                     ctx.lineTo(p2.x, p2.y);
                     ctx.stroke();
                 }
-                ctx.fillStyle = '#FFFFFF';
+
                 for (let i = 0; i < landmarks.length; i++) {
-                    const p = getScaledCoords(landmarks[i]);
+                    const p = mapLandmark(landmarks[i]);
+                    const isTip = (i === 4 || i === 8 || i === 12 || i === 16 || i === 20);
+                    ctx.fillStyle = isTip ? '#FF007F' : '#FFFFFF';
                     ctx.beginPath();
-                    ctx.arc(p.x, p.y, 4, 0, 2 * Math.PI);
+                    ctx.arc(p.x, p.y, isTip ? 6 : 4, 0, 2 * Math.PI);
                     ctx.fill();
                 }
             }
 
-            async function onResults(results) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Renderiza o "Modelo Alvo" em formato de esqueleto num card PiP no canto superior
+            function drawTargetPip(targetPoints, label) {
+                if (!targetPoints || targetPoints.length < 21) return;
                 
-                const handLandmarks = results.rightHandLandmarks || results.leftHandLandmarks;
-                
-                if (handLandmarks) {
-                    drawHand(handLandmarks);
-                    
-                    // Classificação Primária por Seeds Calibradas e Tolerâncias
-                    const seedPred = classifyHandWithSeeds(handLandmarks);
-                    const now = Date.now();
-                    
-                    if (seedPred && now - lastInferenceTime > 100) {
-                        window.ReactNativeWebView.postMessage(JSON.stringify({
-                            type: 'prediction',
-                            label: seedPred.label,
-                            seedName: seedPred.seed,
-                            confidence: seedPred.confidence,
-                            tolerancePassed: seedPred.tolerancePassed,
-                            distance: seedPred.distance
-                        }));
-                        lastInferenceTime = now;
-                    } else if (tfliteModel && now - lastInferenceTime > 100) {
-                        // Fallback TFLite legado se seeds não estiverem disponíveis
-                        const flatArr = normalizeLandmarks(handLandmarks);
-                        const inputTensor = tf.tensor2d(flatArr, [1, 42], 'float32');
-                        const output = tfliteModel.predict(inputTensor);
-                        const outputTensor = output instanceof tf.Tensor ? output : output[0];
-                        const outputData = outputTensor.dataSync();
-                        let maxProb = 0, maxIndex = 0;
-                        outputData.forEach((prob, idx) => {
-                            if (prob > maxProb) { maxProb = prob; maxIndex = idx; }
-                        });
-                        window.ReactNativeWebView.postMessage(JSON.stringify({
-                            type: 'prediction',
-                            label: classLabels[maxIndex],
-                            confidence: maxProb
-                        }));
-                        lastInferenceTime = now;
-                        inputTensor.dispose();
-                        if (output instanceof tf.Tensor) output.dispose();
+                const boxW = 125;
+                const boxH = 135;
+                const pad = 14;
+                const boxX = canvas.width - boxW - pad;
+                const boxY = pad;
+
+                // Fundo translúcido
+                ctx.fillStyle = 'rgba(15, 23, 26, 0.90)';
+                ctx.strokeStyle = '#00E5FF';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                if (ctx.roundRect) {
+                    ctx.roundRect(boxX, boxY, boxW, boxH, 12);
+                } else {
+                    ctx.rect(boxX, boxY, boxW, boxH);
+                }
+                ctx.fill();
+                ctx.stroke();
+
+                // Cabeçalho
+                ctx.fillStyle = '#00E5FF';
+                ctx.font = 'bold 11px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('MODELO ALVO', boxX + boxW / 2, boxY + 18);
+                if (label) {
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.font = 'bold 10px sans-serif';
+                    const shortLbl = label.length > 15 ? label.slice(0, 15) + '..' : label;
+                    ctx.fillText(shortLbl, boxX + boxW / 2, boxY + 30);
+                }
+
+                // Esqueleto modelo
+                const skelX = boxX + 16;
+                const skelY = boxY + 36;
+                const skelW = boxW - 32;
+                const skelH = boxH - 44;
+
+                ctx.strokeStyle = '#00E5FF';
+                ctx.lineWidth = 2.5;
+                for (const [s, e] of HAND_CONNECTIONS) {
+                    const p1 = targetPoints[s];
+                    const p2 = targetPoints[e];
+                    if (!p1 || !p2) continue;
+                    ctx.beginPath();
+                    ctx.moveTo(skelX + p1[0] * skelW, skelY + p1[1] * skelH);
+                    ctx.lineTo(skelX + p2[0] * skelW, skelY + p2[1] * skelH);
+                    ctx.stroke();
+                }
+
+                ctx.fillStyle = '#FFFFFF';
+                for (let i = 0; i < targetPoints.length; i++) {
+                    const p = targetPoints[i];
+                    if (!p) continue;
+                    ctx.beginPath();
+                    ctx.arc(skelX + p[0] * skelW, skelY + p[1] * skelH, 2.5, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+            }
+
+            // Normalização 42 features (mesma utilizada no treino da IA)
+            function predictGesture(landmarks) {
+                const now = Date.now();
+                if (now - lastInferenceTime < 100 || !tfliteModel) return;
+                lastInferenceTime = now;
+
+                try {
+                    let minX = Infinity, maxX = -Infinity;
+                    let minY = Infinity, maxY = -Infinity;
+                    for (let i = 0; i < 21; i++) {
+                        minX = Math.min(minX, landmarks[i].x);
+                        maxX = Math.max(maxX, landmarks[i].x);
+                        minY = Math.min(minY, landmarks[i].y);
+                        maxY = Math.max(maxY, landmarks[i].y);
                     }
+                    const width = Math.max(maxX - minX, 1e-6);
+                    const height = Math.max(maxY - minY, 1e-6);
+                    const size = Math.max(width, height);
+
+                    const norm = [];
+                    for (let i = 0; i < 21; i++) {
+                        norm.push((landmarks[i].x - minX) / size);
+                        norm.push((landmarks[i].y - minY) / size);
+                    }
+
+                    const inputTensor = tf.tensor2d(norm, [1, 42], 'float32');
+                    const output = tfliteModel.predict(inputTensor);
+                    const outputTensor = output instanceof tf.Tensor ? output : output[0];
+                    const outputData = outputTensor.dataSync();
+
+                    let maxProb = 0, maxIndex = 0;
+                    for (let i = 0; i < outputData.length; i++) {
+                        if (outputData[i] > maxProb) {
+                            maxProb = outputData[i];
+                            maxIndex = i;
+                        }
+                    }
+
+                    const predictedClass = classLabels[maxIndex] || '0000000000';
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'prediction',
+                        label: predictedClass,
+                        confidence: maxProb,
+                        landmarks: landmarks.map(p => ({ x: p.x, y: p.y }))
+                    }));
+
+                    inputTensor.dispose();
+                    if (output instanceof tf.Tensor) output.dispose();
+                } catch(e) {
+                    console.error("Inference error:", e);
+                }
+            }
+
+            function onResults(results) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Desenha o esqueleto e processa predição se houver mão
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    const handLandmarks = results.multiHandLandmarks[0];
+                    drawRealHand(handLandmarks);
+                    predictGesture(handLandmarks);
                 } else {
                     const now = Date.now();
-                    if (now - lastInferenceTime > 300) {
+                    if (now - lastInferenceTime > 350) {
                         window.ReactNativeWebView.postMessage(JSON.stringify({
                             type: 'prediction',
                             label: 'Aguardando mão...',
@@ -353,6 +361,118 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
                         }));
                         lastInferenceTime = now;
                     }
+                }
+
+                // Desenha o Modelo Alvo PiP
+                if (window.currentTarget && window.currentTarget.points) {
+                    drawTargetPip(window.currentTarget.points, window.currentTarget.label);
+                }
+            }
+
+            // Captura robusta com fallback inteligente de constraints
+            async function getCameraStream() {
+                setStatus('Solicitando câmera...', 'info');
+
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    try {
+                        return await navigator.mediaDevices.getUserMedia({
+                            video: { 
+                                facingMode: { ideal: '${facingMode}' },
+                                width: { ideal: 640 },
+                                height: { ideal: 480 }
+                            },
+                            audio: false
+                        });
+                    } catch(err1) {
+                        console.warn("Primeira tentativa getUserMedia falhou, tentando video simples:", err1);
+                        try {
+                            return await navigator.mediaDevices.getUserMedia({
+                                video: true,
+                                audio: false
+                            });
+                        } catch(err2) {
+                            throw err2;
+                        }
+                    }
+                }
+
+                const legacy = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+                if (legacy) {
+                    return new Promise((resolve, reject) => {
+                        legacy.call(navigator, { video: true, audio: false }, resolve, reject);
+                    });
+                }
+
+                throw new Error('Câmera indisponível no WebView (mediaDevices não encontrado).');
+            }
+
+            async function init() {
+                try {
+                    const stream = await getCameraStream();
+                    video.srcObject = stream;
+                    video.setAttribute('playsinline', '');
+                    video.setAttribute('webkit-playsinline', '');
+
+                    await new Promise((resolve) => {
+                        video.onloadedmetadata = () => {
+                            video.play().then(resolve).catch(resolve);
+                        };
+                        setTimeout(resolve, 800);
+                    });
+
+                    setStatus('📷 Câmera ativa • Carregando IA...', 'info');
+
+                    function resizeCanvas() {
+                        canvas.width = window.innerWidth;
+                        canvas.height = window.innerHeight;
+                    }
+                    resizeCanvas();
+                    window.addEventListener('resize', resizeCanvas);
+
+                    hands = new Hands({
+                        locateFile: (file) => "https://cdn.jsdelivr.net/npm/@mediapipe/hands/" + file
+                    });
+
+                    hands.setOptions({
+                        maxNumHands: 1,
+                        modelComplexity: 1,
+                        minDetectionConfidence: 0.5,
+                        minTrackingConfidence: 0.5
+                    });
+
+                    hands.onResults(onResults);
+
+                    let isProcessing = false;
+                    async function frameLoop() {
+                        if (video.readyState >= 2 && !isProcessing) {
+                            isProcessing = true;
+                            try {
+                                await hands.send({ image: video });
+                            } catch(e) {}
+                            isProcessing = false;
+                        }
+                        requestAnimationFrame(frameLoop);
+                    }
+                    requestAnimationFrame(frameLoop);
+
+                    setStatus('🟢 Detector Ativo! Aguardando mão...', 'success');
+
+                    // Carrega o classificador TFLite
+                    setTimeout(async () => {
+                        try {
+                            tflite.setWasmPath('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.9/dist/');
+                            const res = await fetch("data:application/octet-stream;base64,${modelBase64}");
+                            const buffer = await res.arrayBuffer();
+                            tfliteModel = await tflite.loadTFLiteModel(buffer);
+                            setStatus('🟢 IA 100% Pronta!', 'success');
+                        } catch(modelErr) {
+                            console.error("Erro modelo:", modelErr);
+                        }
+                    }, 150);
+
+                } catch(e) {
+                    const msg = e.name ? (e.name + ': ' + e.message) : e.toString();
+                    setStatus('🔴 ' + msg, 'error');
                 }
             }
 
@@ -363,27 +483,36 @@ export default function VisionProcessor({ facingMode, onHandsDetected }) {
     `;
 
     return (
-        <WebView
-            originWhitelist={['*']}
-            source={{ html: htmlContent, baseUrl: 'https://localhost' }}
-            style={{ flex: 1, backgroundColor: '#000' }}
-            allowsInlineMediaPlayback={true}
-            mediaPlaybackRequiresUserAction={false}
-            mediaCapturePermissionGrantType="grant"
-            javaScriptEnabled={true}
-            domStorageEnabled={true}
-            onMessage={(event) => {
-                console.log("[WebView native message received]");
-                try {
-                    const data = JSON.parse(event.nativeEvent.data);
-                    console.log(`[WebView Data Parsing] Type: ${data.type}`);
-                    if (data.type === 'status' || data.type === 'prediction' || data.type === 'error') {
-                        onHandsDetected(data);
-                    }
-                } catch(e) {
-                    console.error("[WebView Parsing Error]", e);
-                }
-            }}
-        />
+        <View style={styles.container}>
+            <WebView
+                ref={webViewRef}
+                originWhitelist={['*']}
+                source={{ html: htmlContent, baseUrl: 'https://localhost' }}
+                style={styles.webView}
+                allowsInlineMediaPlayback={true}
+                mediaPlaybackRequiresUserAction={false}
+                mediaCapturePermissionGrantType="grant"
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                androidHardwareAccelerationDisabled={false}
+                androidLayerType="hardware"
+                mixedContentMode="always"
+                scrollEnabled={false}
+                bounces={false}
+                onMessage={(event) => {
+                    try {
+                        const data = JSON.parse(event.nativeEvent.data);
+                        if (data.type === 'status' || data.type === 'prediction' || data.type === 'error') {
+                            onHandsDetected(data);
+                        }
+                    } catch(e) {}
+                }}
+            />
+        </View>
     );
 }
+
+const styles = StyleSheet.create({
+    container: { flex: 1, width: '100%', height: '100%', backgroundColor: '#000' },
+    webView: { flex: 1, width: '100%', height: '100%', backgroundColor: '#000' }
+});

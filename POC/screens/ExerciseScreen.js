@@ -2,7 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, SafeAreaView, Dimensions } from 'react-native';
 import VisionProcessor from '../VisionProcessor';
 import { SignImages } from '../utils/dictionary';
-import { getBiomechanicalGuidance, getClosestLetter } from '../utils/biomechanicalGuide';
+import { referenceSeeds } from '../referenceSeeds';
+import { getBiomechanicalGuidance, getClosestLetter, resolveKinematicCode } from '../utils/biomechanicalGuide';
+import { requestAppCameraPermission } from '../utils/cameraPermission';
 
 export default function ExerciseScreen({ route, navigation }) {
   const { lesson } = route.params; 
@@ -23,11 +25,21 @@ export default function ExerciseScreen({ route, navigation }) {
 
   const predictionsRef = useRef([]);
 
+  // Solicita permissão de câmera ao carregar
+  useEffect(() => {
+    requestAppCameraPermission();
+  }, []);
+
   const toggleCamera = () => {
     setFacingMode(prev => prev === 'environment' ? 'user' : 'environment');
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
+    const granted = await requestAppCameraPermission();
+    if (!granted) {
+      alert("Acesso à câmera é necessário para realizar o exercício.");
+      return;
+    }
     console.log("[Exercise] Starting Game... Countdown initiated.");
     setGameState('COUNTDOWN');
     setCountdown(3);
@@ -165,6 +177,8 @@ export default function ExerciseScreen({ route, navigation }) {
              <VisionProcessor 
                   key={facingMode} 
                   facingMode={facingMode} 
+                  targetPoints={currentLetter ? referenceSeeds[resolveKinematicCode(currentLetter)] : null}
+                  targetLabel={`Sinal '${currentLetter}'`}
                   onHandsDetected={handleMessage} 
              />
              
