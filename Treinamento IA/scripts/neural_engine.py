@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import glob
 import time
@@ -6,6 +7,15 @@ import numpy as np
 import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder
 import logging
+
+# Garante saída UTF-8 no terminal Windows
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+os.environ["PYTHONIOENCODING"] = "utf-8"
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
@@ -15,6 +25,36 @@ TFLITE_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'modelo_gestos.tflite')
 LABELS_SAVE_PATH = os.path.join(BASE_DIR, 'models', 'labels.txt')
 SYNTHETIC_JSON_DIR = os.path.join(BASE_DIR, 'data', 'datasets', 'synthetic_dataset')
 CACHE_DIR = os.path.join(BASE_DIR, 'data', 'unified_cache')
+OVERNIGHT_LOG_FILE = os.path.join(BASE_DIR, 'reports', 'overnight_training.log')
+
+
+class EpochLoggerCallback(tf.keras.callbacks.Callback):
+    """Registra exatamente 1 linha consolidada e limpa por época no log."""
+    def __init__(self, log_path):
+        super().__init__()
+        self.log_path = log_path
+        self.epoch_start = None
+
+    def on_epoch_begin(self, epoch, logs=None):
+        self.epoch_start = time.time()
+
+    def on_epoch_end(self, epoch, logs=None):
+        elapsed = time.time() - self.epoch_start if self.epoch_start else 0
+        logs = logs or {}
+        loss = logs.get('loss', 0.0)
+        acc = logs.get('accuracy', 0.0)
+        val_loss = logs.get('val_loss', 0.0)
+        val_acc = logs.get('val_accuracy', 0.0)
+        msg = (f"ÉPOCA {epoch+1:03d}/150 ({elapsed:.1f}s) | "
+               f"loss: {loss:.4f} | acc: {acc*100:.2f}% | "
+               f"val_loss: {val_loss:.4f} | val_acc: {val_acc*100:.2f}%")
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        formatted = f"[{now_str}] [TREINO] {msg}"
+        try:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(formatted + "\n")
+        except Exception:
+            pass
 
 def format_time(seconds):
     if seconds < 60:
@@ -305,15 +345,17 @@ def run_neural_engine():
         filepath=MODEL_SAVE_PATH,
         monitor='val_loss',
         save_best_only=True,
-        verbose=1
+        verbose=0
     )
+    epoch_logger = EpochLoggerCallback(OVERNIGHT_LOG_FILE)
 
     start_train = time.time()
     history = model.fit(
         train_dataset,
         epochs=150,
         validation_data=val_dataset,
-        callbacks=[early_stopping, checkpoint_callback]
+        callbacks=[early_stopping, checkpoint_callback, epoch_logger],
+        verbose=1
     )
     elapsed_train = time.time() - start_train
     logging.info(f"FASE 4 concluída em {format_time(elapsed_train)} (acumulado: {format_time(time.time() - total_start)})")

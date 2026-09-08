@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, SafeAreaView, Dimensions } from 'react-native';
 import VisionProcessor from '../VisionProcessor';
 import { SignImages } from '../utils/dictionary';
+import { getBiomechanicalGuidance, getClosestLetter } from '../utils/biomechanicalGuide';
 
 export default function ExerciseScreen({ route, navigation }) {
   const { lesson } = route.params; 
@@ -17,6 +18,8 @@ export default function ExerciseScreen({ route, navigation }) {
   const [predictions, setPredictions] = useState([]);
   const [resultTitle, setResultTitle] = useState('');
   const [resultMessage, setResultMessage] = useState('');
+  const [liveGuidance, setLiveGuidance] = useState(null);
+  const [resultGuidance, setResultGuidance] = useState(null);
 
   const predictionsRef = useRef([]);
 
@@ -30,6 +33,8 @@ export default function ExerciseScreen({ route, navigation }) {
     setCountdown(3);
     predictionsRef.current = [];
     setPredictions([]);
+    setLiveGuidance(null);
+    setResultGuidance(null);
   };
 
   // Logica de Contagem
@@ -59,6 +64,10 @@ export default function ExerciseScreen({ route, navigation }) {
   const handleMessage = (data) => {
     if (gameState === 'RECORDING' && data.type === 'prediction' && data.confidence > 0) {
       predictionsRef.current.push(data);
+      if (data.label) {
+        const guidance = getBiomechanicalGuidance(data.label, currentLetter);
+        setLiveGuidance(guidance);
+      }
     }
   };
 
@@ -67,6 +76,7 @@ export default function ExerciseScreen({ route, navigation }) {
     if (records.length === 0) {
       setResultTitle('Nenhuma mão!');
       setResultMessage('O sistema não encontrou nenhuma mão na tela.');
+      setResultGuidance(null);
       setGameState('RESULT');
       return;
     }
@@ -82,13 +92,18 @@ export default function ExerciseScreen({ route, navigation }) {
 
     const dominantLabel = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
     const avgConfidence = confidences[dominantLabel] / counts[dominantLabel];
+    const finalGuidance = getBiomechanicalGuidance(dominantLabel, currentLetter);
+    setResultGuidance(finalGuidance);
 
-    if (dominantLabel.toUpperCase() === currentLetter.toUpperCase()) {
+    const closest = getClosestLetter(dominantLabel);
+    const detectedName = closest.letter ? `Sinal '${closest.letter}'` : dominantLabel;
+
+    if (finalGuidance.match || dominantLabel.toUpperCase() === currentLetter.toUpperCase()) {
        setResultTitle('Incrível!! 🎉');
-       setResultMessage(`Você acertou no alvo com ${(avgConfidence*100).toFixed(1)}% de precisão!`);
+       setResultMessage(`Você executou o sinal com ${(avgConfidence*100).toFixed(1)}% de precisão e excelente postura!`);
     } else {
        setResultTitle('Ops, Tente Novamente! ❌');
-       setResultMessage(`Identificamos mais sinais da letra '${dominantLabel}' do que da letra '${currentLetter}'.`);
+       setResultMessage(`Detectamos maior semelhança com ${detectedName} do que com a letra '${currentLetter}'.`);
     }
 
     setGameState('RESULT');
@@ -161,13 +176,23 @@ export default function ExerciseScreen({ route, navigation }) {
                 </View>
              )}
              
-             {/* Overlay Gravação */}
+             {/* Overlay Gravação com Feedback Biomecânico */}
              {gameState === 'RECORDING' && (
                 <View style={styles.overlayTop}>
-                   <View style={styles.recordingBadge}>
-                      <View style={styles.redDot} />
-                      <Text style={styles.recordingText}>Lendo Gesto...</Text>
+                   <View style={[
+                      styles.recordingBadge,
+                      liveGuidance?.match ? styles.badgeSuccess : (liveGuidance ? styles.badgeFeedback : null)
+                   ]}>
+                      <View style={[styles.redDot, liveGuidance?.match && styles.greenDot]} />
+                      <Text style={styles.recordingText}>
+                        {liveGuidance ? liveGuidance.mainAdvice : 'Lendo Gesto...'}
+                      </Text>
                    </View>
+                   {liveGuidance && !liveGuidance.match && liveGuidance.hints.length > 1 && (
+                      <View style={styles.secondaryAdviceCard}>
+                         <Text style={styles.secondaryAdviceTxt}>{liveGuidance.hints[1]}</Text>
+                      </View>
+                   )}
                 </View>
              )}
           </View>
@@ -178,6 +203,18 @@ export default function ExerciseScreen({ route, navigation }) {
           <View style={styles.idlePanel}>
              <Text style={styles.instructionText}>{resultTitle}</Text>
              <Text style={styles.resultDescText}>{resultMessage}</Text>
+             
+             {/* Guia Didático de Correção Anatômica */}
+             {resultGuidance && !resultGuidance.match && (
+               <View style={styles.guidanceBox}>
+                 <Text style={styles.guidanceTitle}>💡 Dicas de postura para '{currentLetter}':</Text>
+                 {resultGuidance.hints.map((hint, idx) => (
+                   <View key={idx} style={styles.hintItem}>
+                     <Text style={styles.hintText}>{hint}</Text>
+                   </View>
+                 ))}
+               </View>
+             )}
              
              <TouchableOpacity style={styles.playButton} onPress={handleNext}>
                 <Text style={styles.playButtonText}>{resultTitle.includes('Incrível') ? 'CONTINUAR' : 'TENTAR DE NOVO'}</Text>
@@ -217,8 +254,18 @@ const styles = StyleSheet.create({
   countdownTitle: { color: '#FFF', fontSize: 30, fontWeight: 'bold', marginBottom: 10 },
   countdownNumber: { color: '#1CB0F6', fontSize: 100, fontWeight: '900' },
   
-  overlayTop: { position: 'absolute', top: 20, left: 0, right: 0, alignItems: 'center' },
-  recordingBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20 },
+  overlayTop: { position: 'absolute', top: 20, left: 10, right: 10, alignItems: 'center' },
+  recordingBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1, borderColor: '#33464F', maxWidth: '95%' },
+  badgeSuccess: { borderColor: '#58CC02', backgroundColor: 'rgba(20, 60, 20, 0.9)' },
+  badgeFeedback: { borderColor: '#1CB0F6', backgroundColor: 'rgba(15, 30, 45, 0.9)' },
   redDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#FF4B4B', marginRight: 10 },
-  recordingText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' }
+  greenDot: { backgroundColor: '#58CC02' },
+  recordingText: { color: '#FFF', fontSize: 15, fontWeight: 'bold', textAlign: 'center' },
+  secondaryAdviceCard: { marginTop: 8, backgroundColor: 'rgba(0,0,0,0.75)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: '#FF9600' },
+  secondaryAdviceTxt: { color: '#FFD900', fontSize: 13, fontWeight: '600' },
+
+  guidanceBox: { width: '100%', backgroundColor: '#0F171A', borderRadius: 14, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: '#23343A' },
+  guidanceTitle: { color: '#1CB0F6', fontSize: 16, fontWeight: 'bold', marginBottom: 10 },
+  hintItem: { paddingVertical: 6, borderBottomWidth: 1, borderColor: '#1A2A30' },
+  hintText: { color: '#E5E5E5', fontSize: 14, fontWeight: '500', lineHeight: 20 }
 });

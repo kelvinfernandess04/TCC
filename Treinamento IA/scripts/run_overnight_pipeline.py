@@ -85,40 +85,52 @@ def run_pipeline():
     total_expected = len(expected_labels)
     logger.log(f"Total de classes cinemáticas esperadas: {total_expected:,}")
 
-    max_generation_retries = 3
     generation_success = False
+    # Validação rápida de cache existente antes de regerar
+    if os.path.exists(CACHE_DIR):
+        existing_valid = sum(
+            1 for lbl in expected_labels
+            if os.path.exists(os.path.join(CACHE_DIR, f"{lbl}.npz"))
+            and os.path.getsize(os.path.join(CACHE_DIR, f"{lbl}.npz")) > 1024
+            and os.path.getmtime(os.path.join(CACHE_DIR, f"{lbl}.npz")) >= os.path.getmtime(SEEDS_FILE)
+        )
+        if existing_valid == total_expected:
+            logger.log(f"Cache íntegro e atualizado detectado ({existing_valid:,} / {total_expected:,} classes). Reutilizando dataset.", "SUCCESS")
+            generation_success = True
 
-    for attempt in range(1, max_generation_retries + 1):
-        logger.log(f"Executando gerador sintético (Tentativa {attempt}/{max_generation_retries})...")
-        t0 = time.time()
-        try:
-            import synthetic_generator
-            synthetic_generator.main()
-            elapsed_gen = time.time() - t0
-            logger.log(f"Geração concluída em {elapsed_gen:.1f}s. Validando arquivos gerados...")
+    if not generation_success:
+        max_generation_retries = 3
+        for attempt in range(1, max_generation_retries + 1):
+            logger.log(f"Executando gerador sintético (Tentativa {attempt}/{max_generation_retries})...")
+            t0 = time.time()
+            try:
+                import synthetic_generator
+                synthetic_generator.main()
+                elapsed_gen = time.time() - t0
+                logger.log(f"Geração concluída em {elapsed_gen:.1f}s. Validando arquivos gerados...")
 
-            # Validação da integridade dos arquivos .npz no cache
-            valid_npz = 0
-            empty_npz = []
-            for lbl in expected_labels:
-                npz_p = os.path.join(CACHE_DIR, f"{lbl}.npz")
-                if os.path.exists(npz_p) and os.path.getsize(npz_p) > 1024:
-                    valid_npz += 1
+                # Validação da integridade dos arquivos .npz no cache
+                valid_npz = 0
+                empty_npz = []
+                for lbl in expected_labels:
+                    npz_p = os.path.join(CACHE_DIR, f"{lbl}.npz")
+                    if os.path.exists(npz_p) and os.path.getsize(npz_p) > 1024:
+                        valid_npz += 1
+                    else:
+                        empty_npz.append(lbl)
+
+                logger.log(f"Classes validadas com sucesso no cache: {valid_npz:,} / {total_expected:,}")
+
+                if valid_npz == total_expected:
+                    logger.log("✓ ETAPA 1 VALIDADA: 100% das classes geradas com integridade!", "SUCCESS")
+                    generation_success = True
+                    break
                 else:
-                    empty_npz.append(lbl)
+                    logger.log(f"Aviso: {len(empty_npz)} classes com arquivo ausente ou corrompido. Tentando novamente...", "WARNING")
 
-            logger.log(f"Classes validadas com sucesso no cache: {valid_npz:,} / {total_expected:,}")
-
-            if valid_npz == total_expected:
-                logger.log("✓ ETAPA 1 VALIDADA: 100% das classes geradas com integridade!", "SUCCESS")
-                generation_success = True
-                break
-            else:
-                logger.log(f"Aviso: {len(empty_npz)} classes com arquivo ausente ou corrompido. Tentando novamente...", "WARNING")
-
-        except Exception as e:
-            logger.log(f"Erro durante a geração sintética: {e}\n{traceback.format_exc()}", "ERROR")
-            time.sleep(2)
+            except Exception as e:
+                logger.log(f"Erro durante a geração sintética: {e}\n{traceback.format_exc()}", "ERROR")
+                time.sleep(2)
 
     if not generation_success:
         logger.log("ERRO FATAL: Não foi possível gerar a totalidade do dataset sintético.", "FATAL")

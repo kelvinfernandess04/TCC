@@ -6,13 +6,14 @@ import { SignImages } from '../utils/dictionary';
 export default function TrailScreen({ navigation }) {
   const [selectedLesson, setSelectedLesson] = useState(null);
 
-  // Dividir os Sinais de 3 em 3
+  // Dividir os Sinais de LIBRAS em fases de 3 em 3 letras
   const trailLevels = useMemo(() => {
+    const availableLetters = Object.keys(SignImages);
     const levels = [];
-    for (let i = 0; i < labels.length; i += 3) {
+    for (let i = 0; i < availableLetters.length; i += 3) {
       levels.push({
         id: i / 3 + 1,
-        content: labels.slice(i, i + 3)
+        content: availableLetters.slice(i, i + 3)
       });
     }
     return levels;
