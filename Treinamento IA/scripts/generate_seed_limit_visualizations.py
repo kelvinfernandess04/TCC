@@ -117,16 +117,17 @@ def main():
     print(f"Total de {len(seed_keys)} sementes encontradas no dataset.")
 
     # ---------------------------------------------------------
-    # FIGURA 1: ESTÁGIOS DOS DEDOS (ESTÁGIOS 0, 1, 2, 3)
+    # FIGURA 1: ESTÁGIOS DOS DEDOS (ESTÁGIOS 0 A 4)
     # ---------------------------------------------------------
-    fig1, axes1 = plt.subplots(1, 4, figsize=(16, 4.5))
-    fig1.suptitle("1. SEMENTES DOS ESTÁGIOS DOS DEDOS (0: Aberto | 1: Garra | 2: Plataforma | 3: Fechado)", fontsize=12, fontweight='bold', y=1.02)
+    fig1, axes1 = plt.subplots(1, 5, figsize=(18, 4.5))
+    fig1.suptitle("1. SEMENTES DOS ESTÁGIOS DOS DEDOS (0: Reto | 1: Concha | 2: Gancho | 3: Mesa | 4: Punho)", fontsize=12, fontweight='bold', y=1.02)
 
     stage_patterns = [
-        ({'d4': 0, 'd3': 0, 'd2': 0, 'd1': 0, 'f': 0, 'p': 0}, "Estágio 0: Mão Aberta", "Dedos 100% estendidos"),
-        ({'d4': 1, 'd3': 1, 'd2': 1, 'd1': 1, 'f': 0, 'p': 0}, "Estágio 1: Garra Leve", "Flexão suave MCP/PIP"),
-        ({'d4': 2, 'd3': 2, 'd2': 2, 'd1': 2, 'f': 0, 'p': 0}, "Estágio 2: Plataforma", "Flexão intermediária"),
-        ({'d4': 3, 'd3': 3, 'd2': 3, 'd1': 3, 'f': 0, 'p': 0}, "Estágio 3: Punho Fechado", "Dedos recolhidos no soco")
+        ({'d4': 0, 'd3': 0, 'd2': 0, 'd1': 0, 'f': 0, 'p': 0}, "Estágio 0: Reto", "Dedos 100% estendidos"),
+        ({'d4': 1, 'd3': 1, 'd2': 1, 'd1': 1, 'f': 0, 'p': 0}, "Estágio 1: Concha", "Arco suave MCP/PIP"),
+        ({'d4': 2, 'd3': 2, 'd2': 2, 'd1': 2, 'f': 0, 'p': 0}, "Estágio 2: Gancho", "Base reta, pontas dobradas"),
+        ({'d4': 3, 'd3': 3, 'd2': 3, 'd1': 3, 'f': 0, 'p': 0}, "Estágio 3: Mesa", "MCP 90°, falanges retas"),
+        ({'d4': 4, 'd3': 4, 'd2': 4, 'd1': 4, 'f': 1, 'p': 0}, "Estágio 4: Punho Fechado", "Dedos colados na palma")
     ]
 
     for idx, (pattern, title, sub) in enumerate(stage_patterns):
@@ -141,16 +142,15 @@ def main():
     print(f"[IMAGEM GERADA 1/4] Estágios dos Dedos: {path1}")
 
     # ---------------------------------------------------------
-    # FIGURA 2: ESTADOS DO POLEGAR (F e P)
+    # FIGURA 2: ESTADOS DO POLEGAR (3 ESTADOS SIMPLIFICADOS)
     # ---------------------------------------------------------
-    fig2, axes2 = plt.subplots(1, 4, figsize=(16, 4.5))
-    fig2.suptitle("2. SEMENTES DO POLEGAR (F = Dobra Transversal, P = Flexão da Ponta)", fontsize=12, fontweight='bold', y=1.02)
+    fig2, axes2 = plt.subplots(1, 3, figsize=(14, 4.5))
+    fig2.suptitle("2. SEMENTES ANATÔMICAS SIMPLIFICADAS DO POLEGAR (3 Estados | IP Desconsiderado)", fontsize=12, fontweight='bold', y=1.02)
 
     thumb_patterns = [
-        ({'f': 0, 'p': 0}, "F=0, P=0: Polegar Estendido", "Aberto ao lado"),
-        ({'f': 0, 'p': 1}, "F=0, P=1: Ponta Flexionada", "Aberto com ponta curvada"),
-        ({'f': 1, 'p': 0}, "F=1, P=0: Dobrado sobre a Palma", "Oposição transversal"),
-        ({'f': 1, 'p': 1}, "F=1, P=1: Dobrado + Ponta Flex.", "Oposição + ponta flexionada")
+        ({'a0': 0, 'f': 0, 'p': 0}, "1. Aberto Esticado (A0=0, F=0)", "Totalmente estendido na palma aberta"),
+        ({'a0': 1, 'f': 0, 'p': 0}, "2. Junto aos Dedos (A0=1, F=0)", "Aduzido lateralmente"),
+        ({'a0': 1, 'f': 1, 'p': 0}, "3. Na Transversal (A0=1, F=1)", "Oposição cruzando a palma")
     ]
 
     for idx, (pattern, title, sub) in enumerate(thumb_patterns):
@@ -171,17 +171,17 @@ def main():
     fig3.suptitle("3. SEMENTES DE ABERTURA LATERAL (SPREADS A0, A1, A2, A3)", fontsize=12, fontweight='bold', y=1.02)
 
     spread_keys_demo = [
-        seed_keys[0],
-        seed_keys[min(5, len(seed_keys)-1)],
-        seed_keys[min(20, len(seed_keys)-1)],
-        seed_keys[min(50, len(seed_keys)-1)]
+        find_best_matching_key(seed_keys, {'a3': 1, 'a2': 1, 'a1': 1, 'a0': 1, 'd4': 0, 'd3': 0, 'd2': 0, 'd1': 0}) or seed_keys[0],
+        find_best_matching_key(seed_keys, {'a3': 1, 'a2': 1, 'a1': 1, 'a0': 0, 'd4': 0, 'd3': 0, 'd2': 0, 'd1': 0}) or seed_keys[1],
+        find_best_matching_key(seed_keys, {'a3': 1, 'a2': 1, 'a1': 0, 'a0': 1, 'd4': 0, 'd3': 0, 'd2': 0, 'd1': 0}) or seed_keys[2],
+        find_best_matching_key(seed_keys, {'a3': 0, 'a2': 0, 'a1': 0, 'a0': 0, 'd4': 0, 'd3': 0, 'd2': 0, 'd1': 0}) or seed_keys[3]
     ]
 
     spread_titles = [
-        ("Sem Abertura (Neutro)", "Dedos paralelos"),
-        ("Abertura Polegar-Indicador", "Spread A0=1"),
-        ("Abertura Indicador-Médio", "Spread A1=1"),
-        ("Abertura Total", "Leque completo")
+        ("Dedos Juntos (Sem Spread)", "Paralelos colados"),
+        ("Abertura Polegar (A0=0)", "Polegar afastado"),
+        ("Abertura Indicador-Médio (A1=0)", "Afastamento lateral"),
+        ("Leque Completo (Spreads=0)", "Abertura máxima total")
     ]
 
     for idx, k in enumerate(spread_keys_demo):
@@ -202,10 +202,10 @@ def main():
     fig4.suptitle("4. SEMENTES DE SINAIS EXEMPLOS DE LIBRAS", fontsize=12, fontweight='bold', y=1.02)
 
     libras_patterns = [
-        ({'d4': 3, 'd3': 3, 'd2': 3, 'd1': 3, 'a0': 1, 'f': 1, 'p': 1}, "Sinal 'A'", "Punho fechado, polegar encostado"),
-        ({'d4': 0, 'd3': 3, 'd2': 3, 'd1': 3, 'a0': 1, 'f': 0, 'p': 0}, "Sinal 'I'", "Apenas mindinho levantado"),
-        ({'d4': 3, 'd3': 3, 'd2': 0, 'd1': 0, 'a1': 0, 'a0': 1, 'f': 0, 'p': 0}, "Sinal 'V'", "Indicador e Médio em V"),
-        ({'d4': 3, 'd3': 0, 'd2': 0, 'd1': 0, 'a2': 0, 'a1': 0, 'a0': 1, 'f': 0, 'p': 0}, "Sinal 'W'", "Indicador, Médio e Anelar estendidos")
+        ({'d4': 4, 'd3': 4, 'd2': 4, 'd1': 4, 'a0': 1, 'f': 1, 'p': 0}, "Sinal 'A'", "Punho fechado, polegar oposto"),
+        ({'d4': 0, 'd3': 4, 'd2': 4, 'd1': 4, 'a0': 1, 'f': 1, 'p': 0}, "Sinal 'I'", "Apenas mindinho levantado"),
+        ({'d4': 4, 'd3': 4, 'd2': 0, 'd1': 0, 'a1': 0, 'a0': 1, 'f': 1, 'p': 0}, "Sinal 'V'", "Indicador e Médio em V"),
+        ({'d4': 4, 'd3': 0, 'd2': 0, 'd1': 0, 'a2': 0, 'a1': 0, 'a0': 1, 'f': 1, 'p': 0}, "Sinal 'W'", "Indicador, Médio e Anelar estendidos")
     ]
 
     for idx, (pattern, title, sub) in enumerate(libras_patterns):

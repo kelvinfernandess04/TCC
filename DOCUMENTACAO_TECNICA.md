@@ -1,214 +1,233 @@
-# Documentação Técnica: Sistema de Reconhecimento de Libras (TCC)
+# Documentação Técnica: Sistema de Reconhecimento de LIBRAS (TCC)
 
-Esta documentação descreve detalhadamente a arquitetura, lógica e funcionalidade de todos os scripts presentes no repositório após a atualização para o novo pipeline de extração baseada em vídeo contínuo. O objetivo é permitir que qualquer desenvolvedor compreenda o funcionamento interno do sistema e consiga reproduzir o ambiente de calibração, treinamento e execução.
+Esta documentação descreve detalhadamente a arquitetura, lógica biomecânica, formulação matemática e funcionalidade de todos os componentes e scripts presentes no repositório. O objetivo é fornecer uma referência técnica exaustiva para manutenção, auditoria ou reprodução completa do pipeline de calibração, geração de sementes, síntese e inteligência artificial.
 
 ---
 
 ## 1. Visão Geral do Projeto
 
-O projeto é dividido em dois grandes pilares:
+O projeto baseia-se em um pipeline biomecânico determinístico projetado para superar a limitação de ruído em profundidade (eixo Z) de câmeras monoculares 2D convencionais via MediaPipe Hands:
 
-1. **Pipeline de Calibração e Treinamento (`Treinamento IA/`)**: Responsável por extrair limites biomecânicos precisos do usuário a partir de um único vídeo de calibração, convertê-los em sementes anatômicas, expandi-los sinteticamente para um dataset massivo e treinar o modelo de Inteligência Artificial.
-2. **Ambiente de Validação (`scripts/`)**: Ferramentas para testar a assertividade do modelo treinado.
-
----
-
-## 2. Estrutura de Diretórios Principal
-
-- `Treinamento IA/scripts/`: Scripts do núcleo de calibração, extração e Inteligência Artificial.
-- `Treinamento IA/data/`: Configurações de calibração (`calibration_settings.json`), vídeos gravados, datasets sementes e sintéticos gerados.
-- `Treinamento IA/models/`: Onde o modelo treinado (`.h5` e `.tflite`) e as labels são salvos.
-- `Treinamento IA/reports/`: Relatórios automáticos e renderizações de verificação da anatomia da mão em cada fase.
+1. **Calibração Guiada por Visão Dupla (`guided_hand_calibrator.py` & `guided_thumb_calibrator.py`)**: O usuário calibra diretamente pela webcam, recebendo instruções cirúrgicas na tela. Cada postura limite é gravada em dois ângulos consecutivos: **Frontal** (plano coronal XY) e **Lateral 90°** (plano sagital YZ), com detecção de estabilidade temporal (1.2s) e preservação estrita de comprimentos ósseos.
+2. **Referencial Canônico da Palma e Motor Cinemático Direto (`kinematic_seed_generator.py`)**: Transforma os dados em coordenadas ortonormais da palma onde o vetor normal $\hat{Z}$ aponta perpendicularmente para a frente do observador, garantindo que a flexão dos dedos ocorra sem nenhum desvio lateral ($\Delta X = 0$). Gera um catálogo purificado de **2.568 sementes anatômicas** na taxonomia DADADADAFP.
+3. **Auditoria Visual e Verificação 3D (`inspect_seeds.py` & `generate_seed_limit_visualizations.py`)**: Player com duplo viewport síncrono (Frontal Isométrico + Perfil Lateral 90°) e relatórios gráficos de alta resolução em `reports/seed_verification/`.
+4. **Data Augmentation Biomecânico (`synthetic_generator.py`)**: Expande as sementes em centenas de milhares de amostras simulando pontos de vista 3D em domo esférico com ruído gaussiano controlado de sensores.
+5. **Rede Neural Profunda (`neural_engine.py`)**: Constrói e treina uma Deep Neural Network (DNN) em Keras/TensorFlow e exporta o modelo final nos formatos `.h5` e `.tflite` para integração com o aplicativo mobile (`POC/`).
+6. **Sandbox em Tempo Real (`dynamic_sandbox.py`)**: Ambiente de validação via webcam para inferência ao vivo da rede neural.
 
 ---
 
-## 3. Pipeline de Extração e Treinamento (`Treinamento IA/scripts/`)
+## 2. Estrutura de Diretórios Limpa e Organizada
 
-O novo pipeline centraliza toda a extração de dados em uma única gravação de calibração biomecânica, eliminando a necessidade de digitar ângulos manualmente ou usar bases empíricas ruidosas.
-
-### 3.1 Captura e Calibração
-O usuário grava os movimentos limites de sua mão, e o sistema extrai automaticamente as poses extremas.
-- **`video_recorder.py`**: Aplicação para gravar o vídeo biomecânico, salvando apenas a renderização dos landmarks anatômicos em tela preta (por questões de privacidade) no diretório de gravações.
-- **`video_calibrator.py`**: Roda algoritmos de análise contínua no vídeo gravado para encontrar as extensões máximas e ângulos limites.
-- **`video_inspector.py`**: Permite ao desenvolvedor inspecionar o vídeo com uma timeline interativa, verificar a telemetria em tempo real (ângulos exatos e aberturas) e confirmar ou reatribuir os *keyframes* fundamentais (Mão aberta, Garra, Gancho, Punho fechado, Oposição do Polegar, etc.).
-- **`hand_calibrator.py`**: Painel de controle (Hub UI) que integra gravador, inspetor e renderiza as coordenadas finais extraídas em um simulador 3D interativo para verificação.
-
-### 3.2 Geração de Base (Seeds e Dataset Sintético)
-- **`seed_extractor.py`**: Lê o `calibration_settings.json` exportado pelo inspetor e realiza o *Morphing* linear entre os *keyframes* capturados (ex: morphing do Estágio 0 para o Estágio 3). Ele gera um banco de milhares de sementes perfeitamente limitadas pela mecânica da mão real do usuário, salvando-as em `seeds.json`.
-- **`generate_seed_limit_visualizations.py`**: Processa o `seeds.json` e gera os 4 painéis de relatório gráfico na pasta `reports/` permitindo auditoria visual dos eixos de dobras e spreads anatômicos extraídos.
-- **`synthetic_generator.py` (Motor Biomecânico)**: Pega as sementes e as submete a rotações e variações espaciais rigorosas simulando pontos de vista de câmeras 3D, produzindo o banco de dados sintético final massivo (`synthetic_dataset.json`).
-
-### 3.3 Treinamento da Inteligência Artificial
-- **`neural_engine.py` (Motor Neural)**: Roda a construção da Deep Neural Network (DNN) com as amostras sintéticas processadas e exporta o modelo TFLite. Otimizado para ignorar variações de iluminação por usar coordenadas 3D estritas.
-
----
-
-## 4. Teste e Validação
-
-- **`dynamic_sandbox.py`**: Ambiente interativo em tempo real via Webcam onde o usuário pode observar o MediaPipe rodando em seu corpo e a resposta imediata da rede neural (`modelo_gestos.h5`) classificando a taxonomia LIBRAS DADADADAFP desenvolvida.
-
----
-
-## 5. Taxonomia DADADADAFP
-
-O modelo baseia a classificação em uma string de 10 dígitos (ex: `0100000000`), sendo cada dígito lido do Mindinho em direção ao Polegar:
-
-1. **[D] Mindinho**: Flexão (Estágios `0` a `4`).
-2. **[A] Abertura Mindinho-Anelar**: Spread lateral (`0` = Aberto, `1` = Fechado).
-3. **[D] Anelar**: Flexão (Estágios `0` a `4`).
-4. **[A] Abertura Anelar-Médio**: Spread lateral (`0` = Aberto, `1` = Fechado).
-5. **[D] Médio**: Flexão (Estágios `0` a `4`).
-6. **[A] Abertura Médio-Indicador**: Spread lateral (`0` = Aberto, `1` = Fechado).
-7. **[D] Indicador**: Flexão (Estágios `0` a `4`).
-8. **[A] Abertura Indicador-Polegar**: Spread lateral (`0` = Aberto, `1` = Fechado).
-9. **[F] Movimento Transversal (Polegar)**: Posição do polegar em relação à palma (`0` = Aberto/Plano da Mão, `1` = Oposição transversal/perpendicular).
-10. **[P] Ponta do Polegar (IP)**: Flexão específica da falange distal do polegar (`0` = Aberta/Estendida, `1` = Dobrada/Flexionada).
-
-### Detalhamento dos 5 Estágios de Flexão [D]:
-- **`0` - Estendido**: Dedo completamente reto (MCP 0°, PIP 0°, DIP 0°).
-- **`1` - Curvado / Concha**: Curvatura suave e contínua de todas as falanges (MCP ~25°, PIP ~40°, DIP ~35°).
-- **`2` - Gancho / Hook**: Base (MCP) reta (~0-15°), mas juntas distais PIP/DIP dobradas a ~90°.
-- **`3` - Plataforma / Tabletop**: Base (MCP) flexionada em ângulo reto (~85-90°), mas falanges distais estendidas e retas (~0°).
-- **`4` - Fechado / Punho**: Dedo totalmente dobrado e cerrado contra a palma (MCP ~85°, PIP ~105°, DIP ~80°).
-
----
-
-## 6. Documentação Extensa dos Scripts
-
-Esta seção documenta pasta a pasta e script a script, fornecendo o nível de detalhe necessário para a recriação do sistema a partir do zero ou manutenção profunda.
-
-### 6.1 Pasta: `Treinamento IA/scripts/`
-
-O coração da lógica do sistema, onde ocorre a captura, calibração biomecânica, geração de base de dados e treinamento da inteligência artificial.
-
-#### `video_recorder.py`
-- **Funcionalidade**: Aplicação gráfica (Tkinter) para gravar o usuário executando uma série de movimentos biomecânicos limites.
-- **Detalhes Técnicos**: 
-  - Inicializa o MediaPipe Hands e captura frames da webcam via `cv2.VideoCapture`. 
-  - Não grava a imagem real em RGB do usuário (garantindo privacidade dos dados da pessoa surda/usuário), mas sim um fundo preto com os landmarks anatômicos desenhados (`black_frame`).
-  - Salva o vídeo final em `data/recordings/` com codec `.mp4` (H264/mp4v). Paralelamente, armazena um arquivo `_landmarks.json` com as coordenadas brutas normalizadas e espaciais (X, Y, Z) extraídas em tempo real frame a frame, para agilizar a etapa do calibrador sem necessitar rodar o MediaPipe novamente.
-  - Oferece um roteiro de movimentos (espalmar mão, fechar mão, garras, gancho, oposição de polegar e aberturas).
-
-#### `video_calibrator.py`
-- **Funcionalidade**: Analisa automaticamente o vídeo recém-gravado para extrair as poses extremas (*keyframes*) e limites anatômicos da mão do usuário calibrador.
-- **Detalhes Técnicos**:
-  - Calcula a flexão de cada dedo individualmente e a abertura (spread) utilizando trigonometria profunda (vetores 3D e ângulos entre falanges) via a função auxiliar `joint_flexion`.
-  - Percorre todos os quadros e aplica uma heurística lógica para detectar precisamente:
-    - *Stage 0 Spread*: Mão aberta em leque máximo (baixa flexão média dos dedos, altíssimo spread lateral medido em graus).
-    - *Stage 0 Closed*: Mão estendida, dedos perfeitamente juntos (baixa flexão, baixo spread).
-    - *Stage 1*: Garra (Flexão média ao redor de 120°).
-    - *Stage 2*: Plataforma / Gancho (MCP reto, mas as juntas PIP/DIP hiper flexionadas).
-    - *Stage 3*: Punho totalmente fechado.
-    - *Thumb Opposition*: Frame com a menor distância Euclidiana entre a ponta do polegar e o metacarpo (MCP) do dedo médio.
-    - *Thumb IP Flexed*: Frame de maior flexão da falange distal do polegar, mas com seu MCP reto.
-  - Os frames chave isolados por esse motor são salvos permanentemente em `calibration_settings.json`, junto das proporções e comprimentos ósseos extraídos da mão do indivíduo.
-
-#### `video_inspector.py`
-- **Funcionalidade**: Ferramenta de auditoria e validação visual de vídeo. Permite ao desenvolvedor ou pesquisador avançar frame a frame e auditar o trabalho feito pelo analisador automático.
-- **Detalhes Técnicos**:
-  - Implementado em Tkinter com Canvas customizado de renderização 3D, permitindo rotacionar o esqueleto (`pitch` e `yaw`) com arrasto de mouse para inspeções cirúrgicas de dobras.
-  - Possui painéis telemétricos imprimindo ao vivo a flexão somada (graus) de cada dedo e a distância transversal do polegar.
-  - O usuário pode sobrescrever a decisão do robô de calibração clicando em "Atribuir Quadro Atual", forçando que a calibração de um estágio específico utilize o frame visualizado no player.
-  - Ao concluir, o botão "Salvar Calibração Oficial" escreve o manifesto robusto contendo `captured_poses` para o motor gerador.
-
-#### `hand_calibrator.py`
-- **Funcionalidade**: Hub centralizador da interface de calibração iterativa.
-- **Detalhes Técnicos**: Orquestra a interconexão entre as ferramentas visuais e os módulos de otimização, centralizando logs e saídas de dados do calibrador estático e dinâmico.
-
-#### `iterative_calibrator.py`
-- **Funcionalidade**: Refinamento e otimização não-linear da cinemática teórica da mão.
-- **Detalhes Técnicos**:
-  - Atua como uma ponte entre a matemática purista (`HandKinematicsDirect`) e a realidade empírica (`calibration_settings.json`).
-  - Emprega o método de otimização limit-bound `L-BFGS-B` da biblioteca `scipy.optimize`. 
-  - Minimização de Função de Perda (Loss): Mede a distância geométrica entre as posições assumidas pelas equações da FK (Forward Kinematics) e as posições reais medidas no vídeo de calibração, calibrando os fatores rotacionais dos ângulos estritos até chegarem na maior acurácia morfológica. 
-  - Atualiza o output em arquivos persistentes de `seeds_calibradas.json` agregando os pesos de descida.
-
-#### `seed_extractor.py`
-- **Funcionalidade**: É o Extrator Anatômico Cinemático Híbrido, responsável por unir os *keyframes* capturados no mundo real à árvore de taxonomia LIBRAS DADADADAFP.
-- **Detalhes Técnicos**:
-  - A função `generate_anatomical_hand_3d` funde matrizes (`fuse_dual_plane_landmarks`).
-  - Baseando-se nas posições primordiais do `calibration_settings.json` (p_0_spread, p_1, p_2, p_3), ela constrói um algoritmo de Morphing / Interpolação Linear. Exemplo: Para o estado D2.5, a função sabe exatamente como interpolar a geometria entre o frame do Stage 2 e o frame do Stage 3 gravados no vídeo.
-  - Varre *todas as combinações válidas* da taxonomia de dedos, espalhamentos e polegares, gerando de forma automatizada e híbrida cerca de milhares de poses únicas. A base fundamental (seed) do projeto é condensada e registrada no arquivo `seeds/seeds.json`.
-
-#### `generate_seed_limit_visualizations.py`
-- **Funcionalidade**: Script de relatórios gráficos de validação ortopédica (Auditoria Visual).
-- **Detalhes Técnicos**: 
-  - Lê o volumoso `seeds.json` e busca as sementes exatas correspondentes aos extremos lógicos (Padrão 100% aberto, Padrão 100% fechado, Spreads em leque, Configurações de letras de LIBRAS A, V, W, I).
-  - Desenha um canvas limpo projetando os ossos da mão de uma visão 3D para um array 2D e gera quatro figuras (`.png`) compostas, que são depositadas no repositório em `reports/seed_verification/`. Garante que os *morphings* matemáticos não geraram ossos distorcidos.
-
-#### `synthetic_generator.py` (Motor Biomecânico)
-- **Funcionalidade**: Fabrica o Dataset Massivo sintético (Data Augmentation Baseada em Mecânica, não em imagem). 
-- **Detalhes Técnicos**:
-  - Lê cada semente limpa registrada no passo anterior.
-  - Emprega matrizes de rotação de Euler (`rot_x`, `rot_y`, `rot_z`) simulando órbitas de câmeras num domo acima da mão com o algoritmo `bounce_wave` para simular uma Varredura Contínua 3D perfeita (passando por inclinações angulares variadas de visões frontais a laterais e top-down).
-  - Projeta os pontos 3D girados com correção de perspectiva Z para extrair as posições pseudo-2D.
-  - Injeta *Ruído Gaussiano* de sensores em microescala para forçar a inteligência artificial a não decorar os pontos, aumentando dramaticamente a capacidade de generalização e resiliência a câmeras ruins no mundo real.
-  - Gera pastas por classe dentro de `data/datasets/synthetic_dataset/`.
-
-#### `neural_engine.py` (Motor Neural)
-- **Funcionalidade**: Pipeline autônomo, robusto e multi-etapas de Treinamento e Deploy da Inteligência Artificial em Deep Learning.
-- **Detalhes Técnicos**:
-  - **Fase 1 (Conversão p/ NPZ)**: Para processar o dataset gigantesco sem MemoryLeak, ele converte em blocos (incrementalmente) os arquivos `.json` em matrizes `.npz` da biblioteca `numpy`, comprimidas para velocidade altíssima e uso mínimo de I/O.
-  - **Fase 2 (Carregamento Array)**: Carrega do disco pre-alocando Arrays de espaço imutável, e duplica espelhando o eixo X para forçar *Data Augmentation* nativo suportando destros e canhotos sem distinção. Divide em Treino (85%) e Validação (15%) acoplado em `tf.data.Dataset` (Performance `AUTOTUNE`).
-  - **Fase 3 (Construção Keras)**: Montagem de uma rede `Sequential` de múltiplas camadas densas (512 -> 256 -> 128 neurônios) utilizando ativações ReLU, `BatchNormalization` para aceleração do gradiente, e regularizadores `Dropout(0.2)` contra *overfitting*. A saída usa `Softmax` (Multiclasse categórica correspondente às dezenas/centenas de taxonomias LIBRAS).
-  - **Fase 4 (Treinamento)**: Emprega o Otimizador `Adam(lr=0.001)` e uma rotina rigorosa de `EarlyStopping` (patience 15) que devolve a rede para o estado mais performático caso o Loss de validação pare de descer.
-  - **Fase 5 (Build/Export)**: Salva a matriz de pesos treinada no arquivo hierárquico `modelo_gestos.h5`, extrai e sanitiza os rótulos preditivos codificados no `LabelEncoder` para `labels.txt`, e realiza compilação ultra compacta para TFLite (TensorFlow Lite), permitindo a portabilidade da IA para C++, Java e Mobile.
-
-#### `calibrated_classifier.py`
-- **Funcionalidade**: Agente classificador matemático que trabalha por similaridade e matriz de tolerância rigorosa, servindo como uma IA Explicável/Dura em oposição ao modelo Deep Learning tradicional. Utilizado ativamente no pipeline de calibração e em cenários onde "False-Positives" não são toleráveis.
-- **Detalhes Técnicos**:
-  - Normaliza qualquer Input de imagem da câmera (via função abstrata baseada nos mesmos cálculos do `Agent2_SpatialNormalizer`) convertendo de pixels pra relações geométricas.
-  - O casamento é obtido pelo comparativo do frame do usuário com o arquivo `seeds_calibradas.json` em uma mecânica mista: Avalia a Distância Euclidiana Ponderada pelas juntas (valorizando falanges com pesos maiores, `punitive_weights`) unida a uma verificação de Distância e Similaridade Cossecante (Cosine Similarity) da direção vetorial da mão.
-  - Entrega no final um dossiê `finger_errors` discriminando precisamente qual dedo reprovou a validação, se foi erro da tolerância standard (desvio padrão) de um cluster ou se reprovou no threshold bruto.
-
-#### `kinematic_seed_generator.py`
-- **Funcionalidade**: Especialista Matemático Cinemático do projeto (`HandKinematicsDirect`). Modela esqueletos perfeitamente a partir do plano matemático sem a contaminação de câmeras.
-- **Detalhes Técnicos**:
-  - Contém constantes anatômicas universais (Comprimentos metacarpais, Proporções base, Ângulos de espalhamento intrínsecos e estágios radiais em graus de dobra).
-  - Função Validadora `is_valid_pose`: Age como os ligamentos colaterais anatômicos. Restringe matrizes proibidas onde espalhamento de dedo acontece com juntas dobradas (bloqueado fisicamente em humanos). Corta abduções hiperbólicas e reduz ruído antes mesmo das matrizes rotacionais serem chamadas.
-  - Implementa Cinemática Direta com multiplicação sucessiva de rotações cartesianas localizadas no topo das pontas de cada falange, processando os 10 dígitos da taxonomia DADADADAFP.
-
-#### `pipeline_calibracao_multiagente.py`
-- **Funcionalidade**: Coração do sistema de classificação multiagente, roda inteligência heurística para otimizar sementes sem as imperfeições da propagação reversa de Redes Neurais.
-- **Detalhes Técnicos**: Orquestra quatro agentes sequenciais:
-  - **Agent 1 (Sanitizer)**: Remove "lixo biológico" do dataset ingerido, usando varredura estatística via Z-Scores e cortes por `visibility` de rastreadores da câmera, impedindo mãos quebradas de poluir a base. 
-  - **Agent 2 (Spatial Normalizer)**: Centraliza, arrasta pulsos para a origem, constrói eixos x,y,z da base local e cria um vetor invariante gigantesco imune a rotação espacial.
-  - **Agent 3 (Dynamic Seed & Tolerance Maker)**: Usa a matemática de aprendizado não-supervisionado (`K-Means k=2`) avaliando o centroide da classe e identificando "sub-classes" espaciais (Ex: Se o sinal B tiver muita variação de Perfil vs Frontal, ele quebra o sinal em dois clusters internos). Mapeia também a tolerância aceitável baseando-se no limite natural (desvio padrão) com as quais o usuário executa suas aberturas.
-  - **Agent 4 (Confusion Optimizer)**: Faz `Cross-Validation` contra as próprias sementes. Onde ocorrer `falso positivo`, a heurística identifica a junta que diferencia aquele sinal conflituoso e adiciona "multiplicadores punitivos" apenas àquela articulação naquele grupo de classes. Ex: Se A e S se confundem, a junta do polegar passa a valer 3x o erro. Exporta no final o `seeds_calibradas.json` consolidado.
-
-#### `pose_verifier_live.py`
-- **Funcionalidade**: Central de Diagnóstico Médico e de Software do projeto, unindo a visão computacional (Webcam) à geometria pura teórica.
-- **Detalhes Técnicos**:
-  - Levanta o tracker MediaPipe em tempo real.
-  - Renderiza um esqueleto simulado tridimensional na tela ao lado (ou sobreposto por transparência Alpha = 0.5) comparando o físico capturado do usuário contra o teórico da classe (Ex: o usuário digita "3131313111" e aparece como ele de fato deveria estar fazendo).
-  - Emite telemetria em milissegundos calculando o `RMSE (Root Mean Square Error)` global da pose e colorindo, em HUD tático, cada junta em Verde (<10%), Amarelo e Vermelho (>25%) para indicar quais articulações do indivíduo estão falhando na conformidade. Permite a emissão do log de telemetria pressionando a tecla `[S]`.
-
-#### `dynamic_sandbox.py`
-- **Funcionalidade**: Ambiente interativo Sandbox completo. A praça de testes finais simulando a aplicação no mundo real com a câmera ligada.
-- **Detalhes Técnicos**: 
-  - Pode carregar os modelos neurais Keras (`modelo_gestos.h5`) ou as pontuações do `CalibratedLibrasClassifier`.
-  - Suporta testes de **trajetória no tempo** (*DTW - Dynamic Time Warping*) capturando os 60 frames da interação e detectando similaridades geométricas dinâmicas comparando os vetores da palma da mão e a translação (x,y) pelo peito. 
-  - Oferece recursos em hotkeys `[T]` para Teste, `[G]` para gravar sinal novo instantaneamente adicionando metadados na base e `[S]` para gravar em fluxo raw os landmarks para *seeds*. 
-  - Computa e plota o boletim estatístico (Forma Base Estática + Similaridade de Trajetória + Orientação) julgando "Aprovado / Reprovado".
+```
+TCC/
+├── POC/                                      # Aplicativo Mobile React Native / Expo (TCC)
+│   ├── App.js
+│   ├── app.json
+│   ├── screens/                              # Telas: ExerciseScreen, SandboxScreen, TrailScreen
+│   └── utils/                                # Dicionários e mapeamentos de LIBRAS
+│
+├── Treinamento IA/                           # Núcleo de Inteligência Artificial e Biomecânica
+│   ├── data/
+│   │   ├── calibration_captures/             # Snapshots PNG anotados das calibrações (Frontal + Lateral)
+│   │   ├── calibration_settings.json         # Manifesto mestre de calibração (landmarks e comprimentos)
+│   │   └── seeds/
+│   │       └── seeds.json                    # Catálogo oficial das 2.568 sementes 3D DADADADAFP
+│   │
+│   ├── models/                               # Modelos treinados e exportados
+│   │   ├── modelo_gestos.h5                  # Modelo Keras hierárquico
+│   │   ├── modelo_gestos.tflite              # Modelo compilado TensorFlow Lite (Mobile)
+│   │   └── labels.txt                        # Rótulos textuais das classes LIBRAS
+│   │
+│   ├── reports/                              # Relatórios e documentações de auditoria
+│   │   ├── seed_verification/                # Painéis de validação visual gerados
+│   │   │   ├── 01_limitacoes_estagios_dedos.png
+│   │   │   ├── 02_limitacoes_polegar_F_P.png
+│   │   │   ├── 03_limitacoes_aberturas_spread.png
+│   │   │   └── 04_sementes_exemplos_libras.png
+│   │   └── relatorio_dataset.md
+│   │
+│   └── scripts/                              # Scripts executáveis do pipeline de IA
+│       ├── dynamic_sandbox.py                # Sandbox de inferência em tempo real via webcam
+│       ├── generate_seed_limit_visualizations.py  # Gerador dos 4 relatórios gráficos de auditoria
+│       ├── guided_hand_calibrator.py         # Calibrador guiado interativo da mão completa (11 passos)
+│       ├── guided_thumb_calibrator.py        # Calibrador guiado especializado do polegar (3 passos)
+│       ├── inspect_seeds.py                  # Inspetor e player 3D de sementes (Dual-Viewport)
+│       ├── kinematic_seed_generator.py       # Motor cinemático direto canônico (gerador de seeds.json)
+│       ├── neural_engine.py                  # Treinamento da DNN, validação e compilação TFLite
+│       └── synthetic_generator.py            # Motor sintético biomecânico de data augmentation
+│
+├── scripts/                                  # Atalhos de execução a partir da raiz
+│   ├── guided_hand_calibrator.py             # Wrapper para o calibrador guiado da mão
+│   ├── guided_thumb_calibrator.py            # Wrapper para o calibrador guiado do polegar
+│   ├── inspect_seeds.py                      # Wrapper para o inspetor de sementes
+│   └── kinematic_seed_generator.py           # Wrapper para o gerador de sementes
+│
+├── executar_calibrador.bat                   # Atalho Windows para iniciar o calibrador de mão
+├── executar_calibrador_polegar.bat           # Atalho Windows para iniciar o calibrador do polegar
+├── CALIBRADOR_DOCUMENTACAO.md                # Guia operacional do calibrador guiado
+├── DOCUMENTACAO_TECNICA.md                   # Esta documentação arquitetural completa
+├── FLUXO_TREINAMENTO_GERACAO.md              # Fluxo conceitual do treinamento sintético
+├── relatorio_calibracao_seeds.md             # Relatório analítico da calibração
+└── relatorio_treinamento_calibrador.md       # Métricas de treinamento e acurácia
+```
 
 ---
 
-### 6.3 Pasta: `scripts/` (Ferramentas e Wrappers da Raiz)
+## 3. Formulação Matemática: Referencial Canônico da Palma
 
-Estes scripts funcionam como pontes e utilitários auxiliares focados em atalhos para os executáveis profundos de `Treinamento IA` ou testes rápidos de integridade (DevOps/APIs).
+### 3.1 Causa Raiz do Desvio Lateral Histórico
+Em gravações monoculares, a mão frequentemente apresentava inclinação de rotação em *yaw* (~68° entre os metacarpos 5 e 17). Quando o produto vetorial tradicional $\vec{Z} = \vec{X} \times \vec{Y}$ era calculado em coordenadas da câmera, o vetor normal $\hat{Z}$ possuía uma componente indesejada massiva no eixo X ($Z_x \approx -0.932$). Consequentemente, ao flexionar os dedos para a frente, as falanges desviavam severamente para a esquerda da tela.
 
-#### `realtime_trainer.py`
-- **Funcionalidade**: Capturador rápido e iterativo sem a complexidade visual do *sandbox*. Ferramenta fundamental para coletar *Continuous Learning*.
-- **Detalhes Técnicos**: Com a câmera aberta, o usuário aperta a hotkey "R" para iniciar um buffer (array na RAM) que absorve até 60 poses consecutivas (aprox. 2 a 3 segundos). Ao finalizar o lote, pelo console ele solicita a letra correta à qual o sinal pertence e escreve o JSON com essas informações diretamente na pasta customizada `dataset_custom`, finalizando o loop instantaneamente.
+### 3.2 Solução: Sistema Ortonormal Canônico
+O algoritmo implementado em `to_canonical_palm_frame(pts)` estabelece uma base ortonormal rigorosa com origem no pulso (Landmark 0):
 
-#### `testeVM.py`
-- **Funcionalidade**: Utilitário de infraestrutura de rede para o ecossistema Back-end do TCC.
-- **Detalhes Técnicos**: Utiliza a biblioteca HTTP `requests` enviando pacotes `GET` simples para as rotas base (`/health` e `/signatures/batch`) no endereço da Máquina Virtual da nuvem, verificando a conectividade do banco de dados remoto e possíveis timeouts de API.
+$$\vec{P}_0 = \text{Landmark 0 (Pulso)}$$
 
-#### `visualizador_calibracao.py`
-- **Funcionalidade**: Script de ponte/Wrapper (atalho).
-- **Detalhes Técnicos**: Modifica o PATH do sistema provisoriamente em tempo de execução via `sys.path.insert` injetando o contexto do `Treinamento IA/scripts` na raíz para ser capaz de evocar e importar o pacote `Calibration3DVisualizer` e lançar o estúdio de inspeção sem causar conflitos de diretório modular.
+1. **Eixo Longitudinal $\hat{e}_y$**: Aponta do pulso ao metacarpo médio (Landmark 9). Em coordenadas de tela, orienta-se para cima ($-Y$):
+   $$\vec{v}_y = \frac{\vec{P}_9 - \vec{P}_0}{\|\vec{P}_9 - \vec{P}_0\|}, \quad \hat{e}_y = -\vec{v}_y$$
 
-#### `pose_verifier_live.py` e `kinematic_seed_generator.py` (Versões Raiz)
-- **Funcionalidade**: Scripts wrappers para lançar as ferramentas complexas localizadas dentro de `Treinamento IA/scripts/`.
-- **Detalhes Técnicos**: Permitem que o desenvolvedor invoque diretamente os especialistas executando `python scripts/nome_do_arquivo.py` sem precisar entrar e manipular referências relativas complicadas ou criar PYTHONPATH fixo, padronizando a chamada através da função `main()`.
+2. **Eixo Transversal $\hat{e}_x$**: Aponta do metacarpo indicador (5) ao mínimo (17), ortogonalizado em relação a $\vec{v}_y$ via processo de Gram-Schmidt:
+   $$\vec{v}_x^{\text{raw}} = \vec{P}_{17} - \vec{P}_5$$
+   $$\vec{v}_x = \vec{v}_x^{\text{raw}} - (\vec{v}_x^{\text{raw}} \cdot \vec{v}_y) \vec{v}_y, \quad \hat{e}_x = \frac{\vec{v}_x}{\|\vec{v}_x\|}$$
+
+3. **Eixo Normal da Palma $\hat{e}_z$**: Perpendicular perfeito à palma da mão, apontando diretamente para o observador (+Z):
+   $$\hat{e}_z = \frac{\hat{e}_x \times \hat{e}_y}{\|\hat{e}_x \times \hat{e}_y\|}$$
+
+4. **Matriz de Alinhamento Canônico $R_{\text{canon}}$**:
+   $$R_{\text{canon}} = \begin{bmatrix} \hat{e}_x^T \\ \hat{e}_y^T \\ \hat{e}_z^T \end{bmatrix}, \quad \vec{P}_{\text{canon}} = R_{\text{canon}} (\vec{P} - \vec{P}_0)$$
+
+**Garantias Biomecânicas Desta Transformação:**
+- O metacarpo médio (9) repousa rigorosamente sobre o eixo longitudinal ($X = 0, Z = 0$).
+- Os metacarpos do indicador (5) e do mindinho (17) possuem **exatamente a mesma profundidade $Z$** ($\Delta Z = 0.000000$), eliminando qualquer rotação espúria em *yaw*.
+- A flexão sagital dos 4 dedos longos opera com $\hat{Z}_{\text{canon}} = (0, 0, 1)$, mantendo $\Delta X = 0$ em todas as juntas. Os dedos curvam estritamente em frente aos seus respectivos nós metacarpais.
+
+---
+
+## 4. Taxonomia DADADADAFP Simplificada (2.568 Classes)
+
+A classificação adota uma string padronizada de 10 dígitos, lida do Mindinho em direção ao Polegar:
+
+$$\text{Código} = [D_4][A_3][D_3][A_2][D_2][A_1][D_1][A_0][F][P]$$
+
+1. **$[D_4]$ Mindinho (Pinky)**: Flexão (Estágios `0` a `4`).
+2. **$[A_3]$ Abertura Mindinho-Anelar**: Spread lateral (`0` = Aberto / Leque, `1` = Fechado / Paralelo).
+3. **$[D_3]$ Anelar (Ring)**: Flexão (Estágios `0` a `4`).
+4. **$[A_2]$ Abertura Anelar-Médio**: Spread lateral (`0` = Aberto, `1` = Fechado).
+5. **$[D_2]$ Médio (Middle)**: Flexão (Estágios `0` a `4`).
+6. **$[A_1]$ Abertura Médio-Indicador**: Spread lateral (`0` = Aberto, `1` = Fechado).
+7. **$[D_1]$ Indicador (Index)**: Flexão (Estágios `0` a `4`).
+8. **$[A_0]$ Abertura Indicador-Polegar**: Abdução radial do polegar (`0` = Aberto esticado, `1` = Junto aos dedos).
+9. **$[F]$ Movimento Transversal (Polegar)**: Oposição transversal (`0` = No plano lateral, `1` = Cruzado na frente da palma).
+10. **$[P]$ Ponta do Polegar (IP)**: Desconsiderado na simplificação canônica (fixado em `0`).
+
+### 4.1 Estágios de Flexão [D] (Cinemática Sagital Pura)
+- **`0` - Estendido**: Dedo 100% reto no plano da mão ($0^\circ, 0^\circ, 0^\circ$).
+- **`1` - Curvado / Concha**: Curvatura suave e uniforme em formato de "C" ($25^\circ, 35^\circ, 25^\circ$).
+- **`2` - Gancho / Hook**: Base (MCP) reta, falanges distais dobradas em garra ($0^\circ, 85^\circ, 80^\circ$).
+- **`3` - Plataforma / Mesa (Tabletop)**: Base (MCP) flexionada a $90^\circ$ para a frente, falanges distais retas ($90^\circ, 0^\circ, 0^\circ$).
+- **`4` - Fechado / Punho**: Dedo totalmente dobrado e colado contra a palma ($85^\circ, 95^\circ, 75^\circ$).
+
+### 4.2 Os 3 Estados Fundamentais do Polegar
+- **Estado 0: Aberto Esticado (`A0=0, F=0, P=0`)**: Abdução radial máxima no plano da mão aberta.
+- **Estado 1: Junto aos Dedos (`A0=1, F=0, P=0`)**: Polegar aduzido encostado ao lado do dedo indicador / palma.
+- **Estado 2: Na Transversal (`A0=1, F=1, P=0`)**: Polegar cruzando transversalmente a frente da palma em oposição.
+
+### 4.3 Poda Biomecânica
+1. **IP Desconsiderado**: $P = 0$ obrigatório.
+2. **Coerência da Oposição**: $A_0 = 0$ e $F = 1$ é anatomicamente impossível (não se pode estar em abdução máxima e na transversal ao mesmo tempo).
+3. **Indicador Fechado**: Quando $D_1 \ge 2$, o polegar não pode estar aberto esticado ($A_0 = 1$ forçado).
+4. **Travamento de Abertura em Flexão**: Dedos dobrados ($D \ge 2$) não realizam abdução colateral ($A = 1$ forçado).
+5. **Juncturae Tendinum**: O anelar não pode estar estendido quando médio e mínimo estão cerrados em punho.
+
+Total de classes resultantes: **2.568 sementes válidas**.
+
+---
+
+## 5. Documentação dos Scripts do Pipeline
+
+### 5.1 `guided_hand_calibrator.py`
+- **Função**: Calibrador guiado em tempo real da mão completa.
+- **Estrutura**: Executa 11 passos instrucionais cobrindo baseline da palma, os 5 estágios dos 4 dedos longos em bloco, spreads e posições básicas de polegar.
+- **Captura em Duplo Ângulo**: Cada passo exige estabilização de 1.2s no ângulo Frontal e em seguida no Perfil Lateral 90°.
+- **Saída**: Grava snapshots anotados em `data/calibration_captures/` e salva o manifesto em `data/calibration_settings.json`.
+
+### 5.2 `guided_thumb_calibrator.py`
+- **Função**: Assistente interativo especializado exclusivamente na calibração cirúrgica do polegar.
+- **Etapas**:
+  1. `thumb_open`: Polegar aberto esticado no plano da mão aberta.
+  2. `thumb_closed`: Polegar aduzido colado ao indicador com dedos fechados.
+  3. `thumb_transversal`: Polegar em oposição transversal cruzando a palma.
+- **Preservação Rígida de Comprimentos Ósseos**: Extrai os comprimentos $L_1, L_2, L_3$ da captura `baseline_open` e projeta os vetores de rotação reais mantendo rigorosamente constantes as distâncias inter-articulares.
+- **Sincronização com o Pipeline**: Atualiza `calibration_settings.json` na chave `thumb_extracted` e dispara imediatamente a regeneração de `seeds.json` e dos relatórios visuais.
+
+### 5.3 `kinematic_seed_generator.py`
+- **Função**: Motor de Cinemática Direta Canônica (`HandKinematicsDirect`).
+- **Estrutura**: Transforma as bases da palma para o referencial ortonormal canônico, monta os dedos longos com flexão sagital pura e os polegares calibrados, filtra as poses contra as regras de poda biomecânica e exporta as 2.568 sementes para `data/seeds/seeds.json`.
+
+### 5.4 `inspect_seeds.py`
+- **Função**: Player interativo e auditor sequencial 3D de sementes.
+- **Interface**: Janela OpenCV com tipografia Pillow Unicode, apresentando dois viewports 3D simultâneos:
+  - **Visão 1**: Frontal / Isométrica (Yaw 15°, Pitch -12°).
+  - **Visão 2**: Perfil Lateral 90° (Yaw 90°, Pitch -5°).
+- **Atalhos**: `[ESPAÇO]` (Play/Pause), `[A]/[D]` (Navegar sementes), `[1]-[5]` (Filtrar estágios de flexão), `[L]` (Alternar entre sinais LIBRAS: A, B, C, D, I, L, V, W).
+
+### 5.5 `generate_seed_limit_visualizations.py`
+- **Função**: Geração automática de painéis de auditoria gráfica em alta resolução.
+- **Saídas em `reports/seed_verification/`**:
+  - `01_limitacoes_estagios_dedos.png`: Sequência dos 5 estágios (0 a 4) dos dedos longos.
+  - `02_limitacoes_polegar_F_P.png`: Estados fundamentais do polegar.
+  - `03_limitacoes_aberturas_spread.png`: Comparativo de leque aberto vs. dedos colados.
+  - `04_sementes_exemplos_libras.png`: Poses representativas de sinais LIBRAS (A, I, V, W).
+
+### 5.6 `synthetic_generator.py`
+- **Função**: Motor biomecânico gerador de dataset massivo sintético.
+- **Operação**: Aplica rotações espaciais 3D em domo esférico sobre cada uma das 2.568 sementes, simulando múltiplos pontos de vista de câmeras reais e adicionando ruído gaussiano calibrado.
+
+### 5.7 `neural_engine.py`
+- **Função**: Pipeline de Deep Learning para treinamento e deploy.
+- **Arquitetura**: DNN Sequencial com camadas densas (512 -> 256 -> 128 neurônios), ativações ReLU, normalização em lote (`BatchNormalization`), `Dropout(0.2)` e classificação final via `Softmax` sobre as 2.568 classes.
+- **Deploy**: Exporta `modelo_gestos.h5` e realiza a compilação otimizada para `modelo_gestos.tflite` com metadados para mobile.
+
+### 5.8 `dynamic_sandbox.py`
+- **Função**: Ambiente interativo para teste do modelo treinado com webcam ao vivo.
+- **Operação**: Processa o fluxo de vídeo via MediaPipe Hands, normaliza espacialmente as coordenadas em relação ao pulso e envia o tensor de entrada para a rede neural, exibindo a previsão DADADADAFP e o sinal LIBRAS correspondente em tempo real.
+
+---
+
+## 6. Como Operar o Sistema
+
+### 1. Calibração da Mão
+Inicie o assistente completo executando:
+```powershell
+python scripts/guided_hand_calibrator.py
+# ou duplo clique em: executar_calibrador.bat
+```
+
+### 2. Calibração Especializada do Polegar
+Para calibrar especificamente os 3 estados do polegar com instruções em tela:
+```powershell
+python scripts/guided_thumb_calibrator.py
+# ou duplo clique em: executar_calibrador_polegar.bat
+```
+
+### 3. Geração Manual de Sementes
+```powershell
+python scripts/kinematic_seed_generator.py
+```
+
+### 4. Auditoria e Inspeção das Sementes 3D
+```powershell
+python scripts/inspect_seeds.py
+```
+
+### 5. Geração de Dataset Sintético e Treinamento da IA
+```powershell
+python "Treinamento IA/scripts/synthetic_generator.py"
+python "Treinamento IA/scripts/neural_engine.py"
+```
+
+### 6. Teste ao Vivo na Webcam
+```powershell
+python "Treinamento IA/scripts/dynamic_sandbox.py"
+```

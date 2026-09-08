@@ -66,166 +66,259 @@ def rot_z(deg: float) -> np.ndarray:
 # DIRECT HAND KINEMATICS ENGINE
 # ---------------------------------------------------------------------------
 
+def to_canonical_palm_frame(pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Transforma landmarks 3D para o referencial ortonormal canônico da palma:
+    - Origem (0, 0, 0) no pulso (Landmark 0).
+    - Eixo Y longitudinal apontando para cima (-Y na tela, alinhado ao metacarpo médio Landmark 9).
+    - Eixo X transversal apontando para o mindinho (+X na tela, Landmark 17).
+    - Eixo Z normal à palma apontando para a frente (+Z para a câmera / observador).
+    Garante que os nós MCP 5 e 17 tenham rigorosamente a mesma profundidade Z (zero yaw tilt).
+    """
+    p0 = pts[0].copy()
+    v_y = pts[9] - p0
+    y_norm = np.linalg.norm(v_y)
+    y_unit = v_y / y_norm if y_norm > 1e-6 else np.array([0.0, -1.0, 0.0])
+
+    v_x_raw = pts[17] - pts[5]
+    v_x = v_x_raw - np.dot(v_x_raw, y_unit) * y_unit
+    x_norm = np.linalg.norm(v_x)
+    x_unit = v_x / x_norm if x_norm > 1e-6 else np.array([1.0, 0.0, 0.0])
+
+    e_x = x_unit
+    e_y = -y_unit  # dedos apontam para cima (-Y na tela)
+    e_z = np.cross(e_x, e_y)
+    z_norm = np.linalg.norm(e_z)
+    e_z = e_z / z_norm if z_norm > 1e-6 else np.array([0.0, 0.0, 1.0])
+
+    R_canon = np.stack([e_x, e_y, e_z], axis=0)
+    pts_canon = (pts - p0) @ R_canon.T
+    return pts_canon, R_canon
+
+
 class HandKinematicsDirect:
     """
-    Biomechanical Forward Kinematics Engine for MediaPipe Hands (21 3D Landmarks).
-    Enforces strict joint constraints, anatomical segment lengths, and realistic thumb opposition.
+    Direct Geometric Forward Kinematics for MediaPipe Hands (21 3D Landmarks).
+    - Coordinate Frame: Canonical Palm Space with Z=(0,0,1) strictly perpendicular to palm.
+    - Fingers [D]: Pure sagittal forward flexion without any sideways lateral drift (Delta X = 0),
+      preserving 100% rigid bone lengths from the extended open palm (baseline_open).
+    - Spreads [A]: Clear lateral abduction in the palm plane.
+    - Thumb: 3 simplified canonical states (Aberto, Junto, Transversal), with
+      rigid bone lengths from extended palm.
     """
 
-    # Standard Anatomical Euclidean Segment Lengths
-    METACARPAL_LENGTHS = {
-        'Thumb':  0.52,  # 0 -> 1 (Thumb CMC)
-        'Index':  1.00,  # 0 -> 5 (Index MCP)
-        'Middle': 1.03,  # 0 -> 9 (Middle MCP)
-        'Ring':   0.96,  # 0 -> 13 (Ring MCP)
-        'Pinky':  0.88   # 0 -> 17 (Pinky MCP)
-    }
-
-    PHALANX_LENGTHS = {
-        'Thumb':  [0.35, 0.32, 0.28],  # 1->2 (MCP), 2->3 (IP), 3->4 (TIP)
-        'Index':  [0.42, 0.27, 0.20],  # 5->6 (PIP), 6->7 (DIP), 7->8 (TIP)
-        'Middle': [0.46, 0.30, 0.22],  # 9->10 (PIP), 10->11 (DIP), 11->12 (TIP)
-        'Ring':   [0.42, 0.28, 0.21],  # 13->14 (PIP), 14->15 (DIP), 15->16 (TIP)
-        'Pinky':  [0.34, 0.22, 0.18]   # 17->18 (PIP), 18->19 (DIP), 19->20 (TIP)
-    }
-
-    # Base Metacarpal Angles from Wrist in the Palm Plane (XY coronal plane)
-    METACARPAL_BASE_ANGLES = {
-        'Thumb':  -45.0,  # Base divergente padrão
-        'Index':  -15.0,
-        'Middle':   0.0,  # Eixo central da mão
-        'Ring':   +15.0,
-        'Pinky':  +30.0
-    }
-
-    # Mapping of Long Finger Flexion Stages D (0 to 4) to Joint Pitch Angles
-    # Stage 0: Estendido (Reto) - MCP 0°, PIP 0°, DIP 0°
-    # Stage 1: Curvado / Concha (Arco suave) - MCP 25°, PIP 40°, DIP 35°
-    # Stage 2: Gancho / Hook (Base reta, pontas dobradas) - MCP 0°, PIP 90°, DIP 75°
-    # Stage 3: Plataforma / Tabletop (Base a 85°, pontas retas) - MCP 85°, PIP 0°, DIP 0°
-    # Stage 4: Fechado / Punho (Dedo totalmente fechado) - MCP 85°, PIP 105°, DIP 80°
-    FINGER_FLEXION_STAGES = {
-        0: {'J2_Pitch':  0.0, 'J3_Pitch':   0.0, 'J4_Pitch':  0.0},  # 0 = Estendido
-        1: {'J2_Pitch': 25.0, 'J3_Pitch':  40.0, 'J4_Pitch': 35.0},  # 1 = Curvado / Concha
-        2: {'J2_Pitch':  0.0, 'J3_Pitch':  90.0, 'J4_Pitch': 75.0},  # 2 = Gancho / Hook
-        3: {'J2_Pitch': 85.0, 'J3_Pitch':   0.0, 'J4_Pitch':  0.0},  # 3 = Plataforma / Tabletop
-        4: {'J2_Pitch': 85.0, 'J3_Pitch': 105.0, 'J4_Pitch': 80.0}   # 4 = Fechado / Punho
-    }
-
-    # Spread Angle Values (A) for Fingers
-    SPREAD_ANGLES = {
-        # A3 (Mindinho): Base +30°. Aberto vai para +40°. Fechado recua para +15°.
-        'Pinky_Ring':   {0: +10.0, 1: -15.0},
-        # A2 (Anelar): Base +15°. Aberto vai para +23°. Fechado recua para +5°.
-        'Ring_Middle':  {0: +8.0,  1: -10.0},
-        # A1 (Indicador): Base -15°. Aberto vai para -23°. Fechado recua para -5°.
-        'Middle_Index': {0: -8.0,  1: +10.0},
-        # A0 (Polegar): Base -45°. Aberto vai para -60°. Fechado aduz para -25°.
-        'Index_Thumb':  {0: -15.0, 1: +20.0}
+    STAGE_ANGLES = {
+        0: (0.0, 0.0, 0.0),       # Reto / Estendido
+        1: (25.0, 35.0, 25.0),    # Concha / Curvado suave
+        2: (0.0, 85.0, 80.0),     # Gancho / Hook (MCP reto, pontas dobradas)
+        3: (90.0, 0.0, 0.0),      # Mesa / Tabletop (MCP a 90° para a frente)
+        4: (85.0, 95.0, 75.0)     # Punho / Fechado (cerrado na palma)
     }
 
     def __init__(self,
-                 metacarpal_lengths: Optional[Dict[str, float]] = None,
-                 phalanx_lengths: Optional[Dict[str, List[float]]] = None,
-                 metacarpal_base_angles: Optional[Dict[str, float]] = None,
-                 finger_flexion_stages: Optional[Dict[int, Dict[str, float]]] = None,
-                 spread_angles: Optional[Dict[str, Dict[int, float]]] = None,
-                 thumb_config: Optional[Dict[str, Any]] = None):
-        """Precompute palm base positions to ensure exact Euclidean metacarpal lengths."""
-        self.metacarpal_lengths = dict(metacarpal_lengths) if metacarpal_lengths else dict(self.METACARPAL_LENGTHS)
-        self.phalanx_lengths = {k: list(v) for k, v in (phalanx_lengths.items() if phalanx_lengths else self.PHALANX_LENGTHS.items())}
-        self.metacarpal_base_angles = dict(metacarpal_base_angles) if metacarpal_base_angles else dict(self.METACARPAL_BASE_ANGLES)
-        self.finger_flexion_stages = {k: dict(v) for k, v in (finger_flexion_stages.items() if finger_flexion_stages else self.FINGER_FLEXION_STAGES.items())}
-        self.spread_angles = {k: dict(v) for k, v in (spread_angles.items() if spread_angles else self.SPREAD_ANGLES.items())}
-        self.thumb_config = dict(thumb_config) if thumb_config else {
-            'f0_pitch': 5.0,
-            'f0_mcp_pitch': 5.0,
-            'f0_ip_flex': 65.0,
-            'f1_opp_yaw': 45.0,
-            'f1_opp_roll': -40.0,
-            'f1_opp_pitch': 40.0,
-            'f1_mcp_pitch': 45.0,
-            'f1_ip_flex': 65.0
+                 captured_landmarks: Optional[Dict[str, Any]] = None,
+                 thumb_extracted: Optional[Dict[str, Any]] = None,
+                 phalanx_lengths: Optional[Dict[str, Any]] = None):
+        self.captured_landmarks = dict(captured_landmarks) if captured_landmarks else {}
+        self.thumb_extracted = dict(thumb_extracted) if thumb_extracted else {}
+        self.raw_phalanx_lengths = dict(phalanx_lengths) if phalanx_lengths else {}
+        self._init_modular_bases()
+
+    def _init_modular_bases(self):
+        """Inicializa as bases da palma e pré-computa os comprimentos ósseos rígidos da mão aberta."""
+        ref_pts_raw = None
+        # 1. Tenta obter das extrações do polegar / mão estendida
+        if self.thumb_extracted and 'thumb_open' in self.thumb_extracted:
+            raw = self.thumb_extracted['thumb_open']
+            if isinstance(raw, (list, np.ndarray)) and len(raw) == 21:
+                ref_pts_raw = np.array(raw, dtype=np.float64)
+
+        if ref_pts_raw is None:
+            ref_pts_raw = self.get_landmark_array('thumb_open')
+        if ref_pts_raw is None:
+            ref_pts_raw = self.get_landmark_array('baseline_open')
+        if ref_pts_raw is None:
+            ref_pts_raw = self.get_landmark_array('spread_open')
+        if ref_pts_raw is None:
+            ref_pts_raw = self.get_landmark_array('spread_closed')
+
+        if ref_pts_raw is not None and len(ref_pts_raw) == 21:
+            self.ref_pts, self.R_canon = to_canonical_palm_frame(ref_pts_raw)
+            self.palm_base = self.ref_pts[[0, 1, 5, 9, 13, 17]].copy()
+        else:
+            self.R_canon = np.eye(3)
+            self.palm_base = np.array([
+                [ 0.000,  0.000,  0.000],  # Wrist (0)
+                [-0.280, -0.191,  0.000],  # Thumb CMC (1)
+                [-0.236, -0.960, -0.041],  # Index MCP (5)
+                [ 0.000, -0.997,  0.000],  # Middle MCP (9)
+                [ 0.226, -0.943, -0.002],  # Ring MCP (13)
+                [ 0.433, -0.819, -0.041]   # Pinky MCP (17)
+            ], dtype=np.float64)
+            self.ref_pts = np.zeros((21, 3), dtype=np.float64)
+            self.ref_pts[0] = self.palm_base[0]
+            self.ref_pts[1] = self.palm_base[1]
+            self.ref_pts[5] = self.palm_base[2]
+            self.ref_pts[9] = self.palm_base[3]
+            self.ref_pts[13] = self.palm_base[4]
+            self.ref_pts[17] = self.palm_base[5]
+
+        # No referencial canônico:
+        # rx = (1, 0, 0)
+        # ry = (0, -1, 0)  [dedos para cima]
+        # rz = (0, 0, 1)   [normal para a frente / observador]
+        self.rx = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        self.ry = np.array([0.0, -1.0, 0.0], dtype=np.float64)
+        self.rz = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+        # Definições das juntas e comprimentos ósseos rígidos dos 4 dedos
+        self.finger_defs = {
+            'Index':  {'mcp': 5,  'joints': [6, 7, 8]},
+            'Middle': {'mcp': 9,  'joints': [10, 11, 12]},
+            'Ring':   {'mcp': 13, 'joints': [14, 15, 16]},
+            'Pinky':  {'mcp': 17, 'joints': [18, 19, 20]}
         }
 
-        self.palm_bases: Dict[str, np.ndarray] = {}
-        for finger, length in self.metacarpal_lengths.items():
-            deg = self.metacarpal_base_angles[finger]
-            rad = math.radians(deg)
-            # Bone extends along -Y (MediaPipe canonical orientation, distal direction)
-            # and spreads along X in the coronal palm plane (Z = 0)
-            vec = np.array([
-                length * math.sin(rad),
-                -length * math.cos(rad),
-                0.0
-            ], dtype=np.float64)
-            self.palm_bases[finger] = vec
+        self.finger_lengths = {}
+        self.finger_spread_dirs_open = {}
+        self.finger_spread_dirs_closed = {}
+
+        default_finger_lengths = {
+            'Index':  (0.393407, 0.240129, 0.205338),
+            'Middle': (0.422649, 0.271338, 0.222845),
+            'Ring':   (0.396014, 0.258492, 0.216478),
+            'Pinky':  (0.329636, 0.223851, 0.197460)
+        }
+
+        for fname, d in self.finger_defs.items():
+            mcp_idx = d['mcp']
+            j = d['joints']
+
+            if fname in self.raw_phalanx_lengths and len(self.raw_phalanx_lengths[fname]) == 3:
+                l1, l2, l3 = [float(x) for x in self.raw_phalanx_lengths[fname]]
+            else:
+                l1 = float(np.linalg.norm(self.ref_pts[j[0]] - self.ref_pts[mcp_idx]))
+                l2 = float(np.linalg.norm(self.ref_pts[j[1]] - self.ref_pts[j[0]]))
+                l3 = float(np.linalg.norm(self.ref_pts[j[2]] - self.ref_pts[j[1]]))
+
+            def_l = default_finger_lengths.get(fname, (0.35, 0.23, 0.20))
+            if l1 < 1e-4: l1 = def_l[0]
+            if l2 < 1e-4: l2 = def_l[1]
+            if l3 < 1e-4: l3 = def_l[2]
+            self.finger_lengths[fname] = (l1, l2, l3)
+
+            # Direção unitária de abertura em leque no plano da palma (Z = 0)
+            v_open = (self.ref_pts[j[2]] - self.ref_pts[mcp_idx]).copy()
+            v_open[2] = 0.0  # projeta no plano frontal da palma
+            norm_open = np.linalg.norm(v_open)
+            if norm_open > 1e-4:
+                self.finger_spread_dirs_open[fname] = v_open / norm_open
+            else:
+                default_dirs = {
+                    'Index':  np.array([-0.06, -0.998, 0.0]),
+                    'Middle': np.array([0.00,  -1.000, 0.0]),
+                    'Ring':   np.array([0.15,  -0.988, 0.0]),
+                    'Pinky':  np.array([0.38,  -0.925, 0.0])
+                }
+                v_def = default_dirs.get(fname, self.ry.copy())
+                self.finger_spread_dirs_open[fname] = v_def / np.linalg.norm(v_def)
+
+            # Direção unitária de dedos juntos (estritamente paralela ao eixo longitudinal -Y)
+            self.finger_spread_dirs_closed[fname] = self.ry.copy()
+
+        # Comprimentos ósseos rígidos do polegar medidos da palma estendida
+        if 'Thumb' in self.raw_phalanx_lengths and len(self.raw_phalanx_lengths['Thumb']) == 3:
+            tl1, tl2, tl3 = [float(x) for x in self.raw_phalanx_lengths['Thumb']]
+        else:
+            tl1 = float(np.linalg.norm(self.ref_pts[2] - self.ref_pts[1]))
+            tl2 = float(np.linalg.norm(self.ref_pts[3] - self.ref_pts[2]))
+            tl3 = float(np.linalg.norm(self.ref_pts[4] - self.ref_pts[3]))
+
+        if tl1 < 1e-4: tl1 = 0.415389
+        if tl2 < 1e-4: tl2 = 0.319620
+        if tl3 < 1e-4: tl3 = 0.248609
+        self.thumb_lengths = (tl1, tl2, tl3)
+
+    def get_landmark_array(self, step_key: str) -> Optional[np.ndarray]:
+        """Obtém a matriz (21, 3) de landmarks normalizados para o passo solicitado."""
+        entry = self.captured_landmarks.get(step_key)
+        if entry is None:
+            entry = self.thumb_extracted.get(step_key)
+        if entry is None:
+            return None
+        if isinstance(entry, dict):
+            pts = entry.get('pts_norm') or entry.get('frontal') or entry.get('lateral')
+        elif isinstance(entry, (list, np.ndarray)):
+            pts = entry
+        else:
+            pts = None
+
+        if pts is not None and len(pts) == 21:
+            return np.array(pts, dtype=np.float64)
+        return None
+
+    def get_source_for_thumb(self, thumb_state: int) -> np.ndarray:
+        """
+        Retorna as coordenadas 3D canônicas para o estado solicitado do polegar:
+          0 = Aberto esticado (thumb_open)
+          1 = Junto aos dedos com os dedos fechados (thumb_closed)
+          2 = Na transversal (thumb_transversal)
+        """
+        arr_raw = None
+        if self.thumb_extracted:
+            keys = ['thumb_open', 'thumb_closed', 'thumb_transversal']
+            if thumb_state < len(keys):
+                arr_raw = self.thumb_extracted.get(keys[thumb_state])
+
+        if arr_raw is None:
+            if thumb_state == 0:
+                arr_raw = self.get_landmark_array('thumb_open') or self.get_landmark_array('thumb_f0_p0') or self.get_landmark_array('spread_open')
+            elif thumb_state == 1:
+                arr_raw = self.get_landmark_array('thumb_closed') or self.get_landmark_array('spread_closed')
+            else:
+                arr_raw = self.get_landmark_array('thumb_transversal') or self.get_landmark_array('thumb_f1') or self.get_landmark_array('thumb_f1_p1') or self.get_landmark_array('thumb_f1_p0')
+
+        if arr_raw is None:
+            arr_raw = self.ref_pts
+
+        if isinstance(arr_raw, list):
+            arr_raw = np.array(arr_raw, dtype=np.float64)
+
+        # Transforma o arr_raw para a mesma base canônica
+        pts_can, _ = to_canonical_palm_frame(arr_raw)
+        return pts_can
 
     @classmethod
     def from_calibration_file(cls, filepath: str) -> 'HandKinematicsDirect':
-        """Instantiate HandKinematicsDirect using calibrated parameters from calibration_settings.json."""
+        """Instancia HandKinematicsDirect diretamente das marcações capturadas reais em calibration_settings.json."""
         if not os.path.exists(filepath):
-            print(f"[HandKinematicsDirect] Arquivo de calibração não encontrado ({filepath}). Usando valores padrão.")
+            print(f"[HandKinematicsDirect] Arquivo de calibração não encontrado ({filepath}).")
             return cls()
 
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            stages_raw = data.get('stages', {})
-            finger_flexion_stages = {}
-            ref_finger = 'Index' if 'Index' in stages_raw else ('Middle' if 'Middle' in stages_raw else None)
-            if ref_finger and isinstance(stages_raw[ref_finger], dict):
-                for st_k, angles in stages_raw[ref_finger].items():
-                    try:
-                        st_int = int(st_k)
-                        finger_flexion_stages[st_int] = {
-                            'J2_Pitch': float(angles.get('J2_Pitch', 0.0)),
-                            'J3_Pitch': float(angles.get('J3_Pitch', 0.0)),
-                            'J4_Pitch': float(angles.get('J4_Pitch', 0.0))
-                        }
-                    except ValueError:
-                        pass
-
-            spread_angles_raw = data.get('spread_angles', {})
-            spread_angles = {}
-            for pair_k, vals in spread_angles_raw.items():
-                spread_angles[pair_k] = {}
-                for st_k, ang in vals.items():
-                    spread_angles[pair_k][int(st_k)] = float(ang)
-
-            phalanx_lengths = data.get('phalanx_lengths', None)
-            thumb_config = stages_raw.get('Thumb', data.get('thumb_config', None))
-
-            return cls(
-                phalanx_lengths=phalanx_lengths,
-                finger_flexion_stages=finger_flexion_stages if finger_flexion_stages else None,
-                spread_angles=spread_angles if spread_angles else None,
-                thumb_config=thumb_config
-            )
+            captured_landmarks = data.get('captured_landmarks', {})
+            thumb_extracted = data.get('thumb_extracted', {})
+            phalanx_lengths = data.get('phalanx_lengths', {})
+            print(f"[HandKinematicsDirect] Carregadas {len(captured_landmarks)} capturas reais, {len(thumb_extracted)} dados de polegar e comprimentos calibrados ({len(phalanx_lengths)} dedos).")
+            return cls(captured_landmarks=captured_landmarks,
+                       thumb_extracted=thumb_extracted,
+                       phalanx_lengths=phalanx_lengths)
         except Exception as e:
-            print(f"[HandKinematicsDirect] Erro ao carregar calibração ({e}). Usando valores padrão.")
+            print(f"[HandKinematicsDirect] Erro ao carregar calibração ({e}). Usando fallback padrão.")
             return cls()
 
     @staticmethod
     def is_valid_pose(dadadafafp_code: str) -> Tuple[bool, Optional[str]]:
         """
-        Validate whether a 10-digit DADADADAFP taxonomy code represents a physically
-        possible biomechanical pose.
-
-        Pruning Rules:
-        1. String length and digit domain checks.
-        2. MCP Collateral Ligament Tightening:
-           When MCP flexion D >= 2 (Garrado or Fechado), the collateral ligaments are
-           taut, physically locking lateral abduction/adduction (spread) to closed (A = 1).
-        3. Thumb Opposition vs Abduction compatibility:
-           When Thumb opposes deeply across the palm (F = 1) with flexed fingers,
-           hyper-abduction (A0 = 0) is pruned.
+        Valida se o código de 10 dígitos DADADADAFP representa uma pose biomecanicamente possível
+        com a simplificação anatômica (3 estados de polegar e IP desconsiderado com P=0).
         """
         if not isinstance(dadadafafp_code, str) or len(dadadafafp_code) != 10:
             return False, f"Code must be a 10-character string, got '{dadadafafp_code}'"
 
-        # Character format checks
         d4_c, a3_c, d3_c, a2_c, d2_c, a1_c, d1_c, a0_c, f_c, p_c = dadadafafp_code
 
         if d4_c not in '01234' or d3_c not in '01234' or d2_c not in '01234' or d1_c not in '01234':
@@ -234,8 +327,12 @@ class HandKinematicsDirect:
         if a3_c not in '01' or a2_c not in '01' or a1_c not in '01' or a0_c not in '01':
             return False, "Spread states [A] must be '0' (Open) or '1' (Closed)"
 
-        if f_c not in '01' or p_c not in '01':
-            return False, "Thumb states [F] and [P] must be '0' or '1'"
+        if f_c not in '01':
+            return False, "Thumb opposition [F] must be '0' or '1'"
+
+        # IP desconsiderado: aceita P=0 (ou P=1 normalizado)
+        if p_c not in '01':
+            return False, "Thumb IP [P] must be '0' or '1'"
 
         d4 = int(d4_c)  # Pinky
         a3 = int(a3_c)  # Pinky-Ring Spread
@@ -246,47 +343,50 @@ class HandKinematicsDirect:
         d1 = int(d1_c)  # Index
         a0 = int(a0_c)  # Index-Thumb CMC Abduction
         f  = int(f_c)   # Thumb Opposition
-        p  = int(p_c)   # Thumb IP Flexion
+        p  = int(p_c)   # Thumb IP Flexion (desconsiderado, fixado em 0)
 
-        # --- BIOMECHANICAL CONSTRAINT 1: Collateral Ligament Lock (MCP flexed >= 80°) ---
-        # When MCP is flexed in Tabletop (D=3) or Fist (D=4), the collateral ligaments are
-        # taut, physically locking lateral abduction/adduction (spread) to closed (A = 1).
-        if (d4 in (3, 4) or d3 in (3, 4)) and a3 == 0:
-            return False, f"Pinky-Ring spread (A3=0) impossible when Pinky (D4={d4}) or Ring (D3={d3}) is flexed at MCP (3 or 4)"
+        # Regra do IP: sempre normalizado para P=0 (desconsiderado)
+        if p != 0:
+            return False, "Thumb IP flexion disregarded (P must be 0)"
 
-        if (d3 in (3, 4) or d2 in (3, 4)) and a2 == 0:
-            return False, f"Ring-Middle spread (A2=0) impossible when Ring (D3={d3}) or Middle (D2={d2}) is flexed at MCP (3 or 4)"
+        # 3 Estados do Polegar:
+        # (A0=0, F=0) -> Aberto esticado
+        # (A0=1, F=0) -> Junto aos dedos
+        # (A0=1, F=1) -> Na transversal
+        # (A0=0, F=1) -> Impossível (aberto e na transversal ao mesmo tempo)
+        if a0 == 0 and f == 1:
+            return False, "Thumb cannot be wide abducted (A0=0) and crossing palm (F=1) simultaneously"
 
-        if (d2 in (3, 4) or d1 in (3, 4)) and a1 == 0:
-            return False, f"Middle-Index spread (A1=0) impossible when Middle (D2={d2}) or Index (D1={d1}) is flexed at MCP (3 or 4)"
+        # Se o indicador está flexionado/fechado (D1 >= 2), o polegar não pode estar aberto esticado (A0=0)
+        if d1 >= 2 and a0 == 0:
+            return False, f"Thumb cannot be wide open (A0=0) when Index is flexed/closed (D1={d1})"
 
-        # --- BIOMECHANICAL CONSTRAINT 2: Juncturae Tendinum (Ring finger coupling) ---
-        # The ring finger has intertendinous bands to middle and pinky tendons.
-        # If Middle and Pinky are fully clenched in Fist (D=4), Ring cannot be fully extended (D=0) or tabletop (D=3).
+        # --- RESTRIÇÃO BIOMECÂNICA: Bloqueio de Abertura Lateral na Flexão ---
+        if (d4 >= 2 or d3 >= 2) and a3 == 0:
+            return False, f"Pinky-Ring spread (A3=0) impossible when Pinky (D4={d4}) or Ring (D3={d3}) is flexed/closed (D >= 2)"
+
+        if (d3 >= 2 or d2 >= 2) and a2 == 0:
+            return False, f"Ring-Middle spread (A2=0) impossible when Ring (D3={d3}) or Middle (D2={d2}) is flexed/closed (D >= 2)"
+
+        if (d2 >= 2 or d1 >= 2) and a1 == 0:
+            return False, f"Middle-Index spread (A1=0) impossible when Middle (D2={d2}) or Index (D1={d1}) is flexed/closed (D >= 2)"
+
+        # --- RESTRIÇÃO BIOMECÂNICA: Juncturae Tendinum ---
         if d2 == 4 and d4 == 4 and d3 in (0, 3):
             return False, f"Ring (D3={d3}) cannot be fully extended/tabletop when Middle and Pinky are clenched (D2=4, D4=4)"
-
-        # --- BIOMECHANICAL CONSTRAINT 3: Thumb Opposition vs Abduction ---
-        # When Thumb crosses palm (F = 1) and Index is closed (D1 in (3, 4)), wide radial abduction (A0 = 0) is restricted
-        if f == 1 and d1 in (3, 4) and a0 == 0:
-            return False, f"Thumb wide abduction (A0=0) impossible during full opposition (F=1) with closed Index (D1={d1})"
 
         return True, None
 
     def build_landmarks_from_code(self, dadadafafp_code: str) -> np.ndarray:
         """
-        Compute the exact 21 3D landmarks for a hand configuration given by the 10-digit
-        DADADADAFP taxonomy code.
-
-        Returns:
-            np.ndarray of shape (21, 3) representing 3D coordinates (x, y, z)
-            with Landmark 0 (Wrist) at (0.0, 0.0, 0.0).
+        Montagem modular direta de cada dedo:
+        - Flexão dos dedos 'D' movimentando estritamente PARA A FRENTE (plano sagital).
+        - 3 estados simplificados para o polegar (Aberto, Junto, Na transversal).
         """
         is_valid, reason = self.is_valid_pose(dadadafafp_code)
         if not is_valid:
             raise ValueError(f"Invalid biomechanical pose code '{dadadafafp_code}': {reason}")
 
-        # Parse digits
         d4 = int(dadadafafp_code[0])  # Pinky Flexion
         a3 = int(dadadafafp_code[1])  # Pinky-Ring Spread
         d3 = int(dadadafafp_code[2])  # Ring Flexion
@@ -296,157 +396,78 @@ class HandKinematicsDirect:
         d1 = int(dadadafafp_code[6])  # Index Flexion
         a0 = int(dadadafafp_code[7])  # Index-Thumb Abduction
         f  = int(dadadafafp_code[8])  # Thumb Opposition
-        p  = int(dadadafafp_code[9])  # Thumb IP Flexion
+
+        # Determina o estado do polegar: 0=Aberto, 1=Junto, 2=Na transversal
+        if f == 1:
+            thumb_state = 2
+        elif a0 == 1:
+            thumb_state = 1
+        else:
+            thumb_state = 0
 
         landmarks = np.zeros((21, 3), dtype=np.float64)
-        landmarks[0] = np.array([0.0, 0.0, 0.0], dtype=np.float64)  # Wrist (Root)
 
-        # Set Metacarpal Bases (Landmarks 1, 5, 9, 13, 17)
-        landmarks[1]  = self.palm_bases['Thumb']   # Thumb CMC
-        landmarks[5]  = self.palm_bases['Index']   # Index MCP
-        landmarks[9]  = self.palm_bases['Middle']  # Middle MCP
-        landmarks[13] = self.palm_bases['Ring']    # Ring MCP
-        landmarks[17] = self.palm_bases['Pinky']   # Pinky MCP
+        # 1. Base da palma da mão
+        landmarks[0]  = self.palm_base[0]  # Wrist (0)
+        landmarks[1]  = self.palm_base[1]  # Thumb CMC (1)
+        landmarks[5]  = self.palm_base[2]  # Index MCP (5)
+        landmarks[9]  = self.palm_base[3]  # Middle MCP (9)
+        landmarks[13] = self.palm_base[4]  # Ring MCP (13)
+        landmarks[17] = self.palm_base[5]  # Pinky MCP (17)
 
-        # -------------------------------------------------------------------
-        # 1. LONG FINGERS KINEMATICS (Index, Middle, Ring, Pinky)
-        # -------------------------------------------------------------------
-        long_fingers_cfg = [
-            {
-                'finger': 'Index',
-                'mcp_idx': 5,
-                'indices': [6, 7, 8],
-                'stage': d1,
-                'spread_yaw': self.spread_angles['Middle_Index'][a1],
-                'lengths': self.phalanx_lengths['Index']
-            },
-            {
-                'finger': 'Middle',
-                'mcp_idx': 9,
-                'indices': [10, 11, 12],
-                'stage': d2,
-                'spread_yaw': 0.0,  # Reference axis
-                'lengths': self.phalanx_lengths['Middle']
-            },
-            {
-                'finger': 'Ring',
-                'mcp_idx': 13,
-                'indices': [14, 15, 16],
-                'stage': d3,
-                'spread_yaw': self.spread_angles['Ring_Middle'][a2],
-                'lengths': self.phalanx_lengths['Ring']
-            },
-            {
-                'finger': 'Pinky',
-                'mcp_idx': 17,
-                'indices': [18, 19, 20],
-                'stage': d4,
-                'spread_yaw': self.spread_angles['Pinky_Ring'][a3],
-                'lengths': self.phalanx_lengths['Pinky']
-            }
+        # 2. Dedos longos: Cinemática Direta pura com comprimentos rígidos da palma estendida
+        # e flexão estritamente no plano sagital para a frente (+Z)
+        fingers_data = [
+            ('Index',  d1, a1, 5,  [6, 7, 8]),
+            ('Middle', d2, 0,  9,  [10, 11, 12]),
+            ('Ring',   d3, a2, 13, [14, 15, 16]),
+            ('Pinky',  d4, a3, 17, [18, 19, 20])
         ]
 
-        for cfg in long_fingers_cfg:
-            finger = cfg['finger']
-            mcp_idx = cfg['mcp_idx']
-            pip_idx, dip_idx, tip_idx = cfg['indices']
-            stage = cfg['stage']
-            spread_yaw = cfg['spread_yaw']
-            l1, l2, l3 = cfg['lengths']
+        for fname, st, sp, mcp_idx, joint_idxs in fingers_data:
+            u = self.finger_spread_dirs_open[fname] if sp == 0 else self.finger_spread_dirs_closed[fname]
+            t1, t2, t3 = self.STAGE_ANGLES[st]
+            a1_r = math.radians(t1)
+            a2_r = math.radians(t1 + t2)
+            a3_r = math.radians(t1 + t2 + t3)
 
-            pitches = self.finger_flexion_stages[stage]
-            j2_pitch = pitches['J2_Pitch']
-            j3_pitch = pitches['J3_Pitch']
-            j4_pitch = pitches['J4_Pitch']
+            v1 = math.cos(a1_r) * u + math.sin(a1_r) * self.rz
+            v2 = math.cos(a2_r) * u + math.sin(a2_r) * self.rz
+            v3 = math.cos(a3_r) * u + math.sin(a3_r) * self.rz
 
-            # Metacarpal Base Orientation
-            base_yaw = self.metacarpal_base_angles[finger]
-            r_base = rot_z(base_yaw)
+            l1, l2, l3 = self.finger_lengths[fname]
+            p_mcp = landmarks[mcp_idx]
+            landmarks[joint_idxs[0]] = p_mcp + l1 * v1
+            landmarks[joint_idxs[1]] = landmarks[joint_idxs[0]] + l2 * v2
+            landmarks[joint_idxs[2]] = landmarks[joint_idxs[1]] + l3 * v3
 
-            # Joint J1 (MCP Base Spread / Yaw)
-            r_j1 = r_base.dot(rot_z(spread_yaw))
+        # 3. Polegar: reconstruído com comprimentos rígidos da palma estendida
+        src_thumb = self.get_source_for_thumb(thumb_state)
+        l1, l2, l3 = self.thumb_lengths
 
-            # Joint J2 (MCP Flexion / Pitch) -> Computes PIP (Landmark idx_0)
-            r_j2 = r_j1.dot(rot_x(j2_pitch))
-            bone_1 = r_j2.dot(np.array([0.0, -l1, 0.0], dtype=np.float64))
-            p_pip = landmarks[mcp_idx] + bone_1
-            landmarks[pip_idx] = p_pip
+        v1 = src_thumb[2] - src_thumb[1]
+        n1 = np.linalg.norm(v1)
+        u1 = v1 / n1 if n1 > 1e-4 else -self.rx - 0.5 * self.ry
 
-            # Joint J3 (PIP Flexion / Pitch) -> Computes DIP (Landmark idx_1)
-            r_j3 = r_j2.dot(rot_x(j3_pitch))
-            bone_2 = r_j3.dot(np.array([0.0, -l2, 0.0], dtype=np.float64))
-            p_dip = p_pip + bone_2
-            landmarks[dip_idx] = p_dip
+        v2 = src_thumb[3] - src_thumb[2]
+        n2 = np.linalg.norm(v2)
+        u2 = v2 / n2 if n2 > 1e-4 else u1
 
-            # Joint J4 (DIP Flexion / Pitch) -> Computes TIP (Landmark idx_2)
-            r_j4 = r_j3.dot(rot_x(j4_pitch))
-            bone_3 = r_j4.dot(np.array([0.0, -l3, 0.0], dtype=np.float64))
-            p_tip = p_dip + bone_3
-            landmarks[tip_idx] = p_tip
+        v3 = src_thumb[4] - src_thumb[3]
+        n3 = np.linalg.norm(v3)
+        u3 = v3 / n3 if n3 > 1e-4 else u2
 
-        # -------------------------------------------------------------------
-        # 2. THUMB KINEMATICS (Landmarks 0 -> 1(CMC) -> 2(MCP) -> 3(IP) -> 4(TIP))
-        # -------------------------------------------------------------------
-        l_mcp, l_ip, l_tip = self.phalanx_lengths['Thumb']
-        spread_offset = self.spread_angles['Index_Thumb'][a0]
-        base_thumb_yaw = self.metacarpal_base_angles['Thumb']  # -45.0°
-        total_thumb_yaw = base_thumb_yaw + spread_offset
-
-        tc = self.thumb_config
-        j4_pitch = tc.get('f0_ip_flex', 65.0) if (p == 1 and f == 0) else (tc.get('f1_ip_flex', 65.0) if (p == 1 and f == 1) else 0.0)
-
-        if f == 0:
-            # F=0: Polegar no plano lateral da mão
-            r_j1_thumb = rot_z(total_thumb_yaw).dot(rot_x(tc.get('f0_pitch', 5.0)))
-            
-            bone_thumb_1 = r_j1_thumb.dot(np.array([0.0, -l_mcp, 0.0], dtype=np.float64))
-            p_thumb_mcp = landmarks[1] + bone_thumb_1
-            landmarks[2] = p_thumb_mcp
-
-            r_j2_thumb = r_j1_thumb.dot(rot_x(tc.get('f0_mcp_pitch', 5.0)))
-            bone_thumb_2 = r_j2_thumb.dot(np.array([0.0, -l_ip, 0.0], dtype=np.float64))
-            p_thumb_ip = p_thumb_mcp + bone_thumb_2
-            landmarks[3] = p_thumb_ip
-
-            r_j4_thumb = r_j2_thumb.dot(rot_x(j4_pitch))
-            bone_thumb_3 = r_j4_thumb.dot(np.array([0.0, -l_tip, 0.0], dtype=np.float64))
-            landmarks[4] = p_thumb_ip + bone_thumb_3
-
-        else:
-            # F=1: Oposição Transversal
-            opp_yaw_dir = total_thumb_yaw + tc.get('f1_opp_yaw', 45.0)
-            opp_roll = tc.get('f1_opp_roll', -40.0)
-            opp_pitch = tc.get('f1_opp_pitch', 40.0)
-
-            r_j1_thumb = (
-                rot_z(opp_yaw_dir)
-                .dot(rot_y(opp_roll))
-                .dot(rot_x(opp_pitch))
-            )
-
-            bone_thumb_1 = r_j1_thumb.dot(np.array([0.0, -l_mcp, 0.0], dtype=np.float64))
-            p_thumb_mcp = landmarks[1] + bone_thumb_1
-            landmarks[2] = p_thumb_mcp
-
-            # Em oposição, a articulação MCP flexiona para fechar o arco
-            r_j2_thumb = r_j1_thumb.dot(rot_x(tc.get('f1_mcp_pitch', 45.0)))
-            bone_thumb_2 = r_j2_thumb.dot(np.array([0.0, -l_ip, 0.0], dtype=np.float64))
-            p_thumb_ip = p_thumb_mcp + bone_thumb_2
-            landmarks[3] = p_thumb_ip
-
-            r_j4_thumb = r_j2_thumb.dot(rot_x(j4_pitch))
-            bone_thumb_3 = r_j4_thumb.dot(np.array([0.0, -l_tip, 0.0], dtype=np.float64))
-            landmarks[4] = p_thumb_ip + bone_thumb_3
+        landmarks[1] = src_thumb[1].copy()  # CMC 100% real lido da captura do polegar
+        landmarks[2] = landmarks[1] + l1 * (u1 / np.linalg.norm(u1))
+        landmarks[3] = landmarks[2] + l2 * (u2 / np.linalg.norm(u2))
+        landmarks[4] = landmarks[3] + l3 * (u3 / np.linalg.norm(u3))
 
         return landmarks
 
-    def generate_all_valid_seeds(self) -> Dict[str, List[Dict[str, float]]]:
+    def generate_all_valid_seeds(self, max_spread_stage: int = 1) -> Dict[str, List[Dict[str, float]]]:
         """
-        Generate all biomechanically valid seed configurations across the DADADADAFP taxonomy.
-        Pruning invalid poses via is_valid_pose.
-
-        Returns:
-            Dict mapping 10-digit taxonomy keys to 21-landmark normalized coordinate dicts.
+        Gera todas as sementes biomecanicamente válidas com os 3 estados simplificados de polegar
+        e flexão sagital para a frente dos dedos longos.
         """
         seeds: Dict[str, List[Dict[str, float]]] = {}
         valid_count = 0
@@ -456,41 +477,46 @@ class HandKinematicsDirect:
 
         for d4 in regular_states:
             for d3 in regular_states:
-                a3_options = [0, 1] if (d4 <= 2 and d3 <= 2) else [1]
+                a3_options = [0, 1] if (d4 <= max_spread_stage and d3 <= max_spread_stage) else [1]
                 for a3 in a3_options:
 
                     for d2 in regular_states:
-                        a2_options = [0, 1] if (d3 <= 2 and d2 <= 2) else [1]
+                        a2_options = [0, 1] if (d3 <= max_spread_stage and d2 <= max_spread_stage) else [1]
                         for a2 in a2_options:
 
                             for d1 in regular_states:
-                                a1_options = [0, 1] if (d2 <= 2 and d1 <= 2) else [1]
+                                a1_options = [0, 1] if (d2 <= max_spread_stage and d1 <= max_spread_stage) else [1]
                                 for a1 in a1_options:
 
-                                    for a0 in [0, 1]:
-                                        for f in [0, 1]:
-                                            for p in [0, 1]:
-                                                code = f"{d4}{a3}{d3}{a2}{d2}{a1}{d1}{a0}{f}{p}"
+                                    # 3 Estados do Polegar (P sempre 0):
+                                    # (0, 0): Aberto esticado (apenas se D1 <= max_spread_stage)
+                                    # (1, 0): Junto aos dedos
+                                    # (1, 1): Na transversal
+                                    thumb_states = [(1, 0), (1, 1)]
+                                    if d1 <= max_spread_stage:
+                                        thumb_states.insert(0, (0, 0))
 
-                                                is_valid, _ = self.is_valid_pose(code)
-                                                if not is_valid:
-                                                    pruned_count += 1
-                                                    continue
+                                    for a0, f in thumb_states:
+                                        code = f"{d4}{a3}{d3}{a2}{d2}{a1}{d1}{a0}{f}0"
 
-                                                lms_3d = self.build_landmarks_from_code(code)
+                                        is_valid, _ = self.is_valid_pose(code)
+                                        if not is_valid:
+                                            pruned_count += 1
+                                            continue
 
-                                                # Format to list of {"x": ..., "y": ..., "z": ...}
-                                                seeds[code] = [
-                                                    {
-                                                        "x": float(round(pt[0], 6)),
-                                                        "y": float(round(pt[1], 6)),
-                                                        "z": float(round(pt[2], 6))
-                                                    }
-                                                    for pt in lms_3d
-                                                ]
-                                                valid_count += 1
+                                        lms_3d = self.build_landmarks_from_code(code)
 
-        print(f"[HandKinematicsDirect] Generated {valid_count} valid seed poses (Pruned {pruned_count} impossible poses).")
+                                        seeds[code] = [
+                                            {
+                                                "x": float(round(pt[0], 6)),
+                                                "y": float(round(pt[1], 6)),
+                                                "z": float(round(pt[2], 6))
+                                            }
+                                            for pt in lms_3d
+                                        ]
+                                        valid_count += 1
+
+        print(f"[HandKinematicsDirect] Geradas {valid_count} sementes simplificadas (Podadas {pruned_count} poses inválidas).")
         return seeds
 
     def export_seeds_json(self, output_file_path: str) -> None:
@@ -517,16 +543,25 @@ def main():
 
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     seeds_file = os.path.join(base_dir, 'data', 'seeds', 'seeds.json')
+    calib_file = os.path.join(base_dir, 'data', 'calibration_settings.json')
 
-    generator = HandKinematicsDirect()
+    if os.path.exists(calib_file):
+        print(f"[HandKinematicsDirect] Carregando calibração real dual-angle: {calib_file}")
+        generator = HandKinematicsDirect.from_calibration_file(calib_file)
+    else:
+        print("[HandKinematicsDirect] Usando valores biomecânicos padrão.")
+        generator = HandKinematicsDirect()
 
     # Test basic poses
     test_poses = [
-        ("0000000000", "Mão Aberta Total"),
-        ("1111111100", "Mão Garra Leve (Stage 1)"),
-        ("2121212100", "Mão Plataforma (Stage 2)"),
-        ("3131313100", "Punho Fechado (Stage 3)"),
-        ("3131313111", "Punho Fechado com Polegar Oposto e Ponta Flexionada (Sinal 'A')")
+        ("0000000000", "Mão Aberta Total (Estendido Reto)"),
+        ("0101010100", "Mão com Dedos Unidos e Polegar Aduzido (Sinal 'B')"),
+        ("4141000110", "Sinal 'V' (Indicador e Médio abertos, Anelar e Mindinho fechados)"),
+        ("4141410000", "Sinal 'L' (Indicador e Polegar abertos, resto fechado)"),
+        ("1111111100", "Mão Garra / Concha Leve (Stage 1)"),
+        ("2121212100", "Mão Gancho (Stage 2)"),
+        ("3131313100", "Mão Plataforma / Tabletop (Stage 3)"),
+        ("4141414110", "Punho Fechado Completo com Polegar Oposto (Fist / Sinal 'A'/'S')")
     ]
 
     print("\n--- Testes Unitários de Cinemática Direta ---")
